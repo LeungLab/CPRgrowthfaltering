@@ -1,8 +1,8 @@
 #######################################################
 # Code for GEMS growth faltering
 #######################################################
-rm(list=ls())
-graphics.off();
+rm(list=ls()) #this clears the workspace
+graphics.off(); #close all graphics windows
 
 
 library(tidyverse)
@@ -31,88 +31,13 @@ library(pdp)
 
 setwd('')
 
-################### FUNCTion for var screening, regression fitting, AUC calc ####
-CPR.funct <- function(data,outcome,iter,nvars_opts){
-  out=ranger(as.formula(paste(outcome,'~',paste(names,collapse="+"),sep="")),data=data,num.trees=1000,importance="impurity")
-  imps=importance(out)
-  df_imps_full=data.frame(names=names(imps),var_red=as.numeric(imps)) %>% arrange(desc(var_red))
-  
-  
-  result=data.frame(iter=NA,nvar=NA,true=NA,pred_glm=NA,pred_RF=NA)
-  test_record <- NA
-  train_record <- NA
-  
-  for (each in 1:iter){
-    print(each)
-    train=data %>% sample_frac(.80,replace=F)
-    
-    test=data[-which(data$index %in% train$index),]
-    
-    train_record <- c(train_record,table(train[,outcome])[["1"]]) #data$haz_0.5 is equivalent to data[,"haz_0.5"]
-    test_record <- c(test_record,table(test[,outcome])[["1"]])
-    
-    out=ranger(as.formula(paste(outcome,'~',paste(names,collapse="+"),sep="")),data=train,num.trees=1000,importance="impurity")
-    df_imps=data.frame(names=names(ranger::importance(out)),imps=ranger::importance(out)) %>% arrange(desc(imps))
-    for (nvars in nvars_opts){
-      
-      print(nvars)
-      out1=glm(as.formula(paste(outcome,'~',paste(df_imps$names[1:nvars],collapse="+"),sep="")),data=train,family="binomial",control=glm.control(maxit=50))
-      out2=ranger(as.formula(paste(outcome,'~',paste(df_imps$names[1:nvars],collapse="+"),sep="")),data=train,num.trees=1000)
-      
-      df=data.frame(iter=each,nvar=nvars,true=test[[outcome]],pred_glm=as.numeric(predict(out1,newdata=test,type="response")),pred_RF=as.numeric(predict(out2,data=test,type="response")$predictions))
-      result=rbind(result,df)
-    }
-  }
-  result<-result[-1,]
-  train_record<-train_record[-1]
-  test_record<-test_record[-1]
-  
-  AUCs<-result %>% split(.$nvar) %>% purrr::map(~ci.cvAUC(.$pred_glm,.$true,folds=.$iter))
-  AUCs2<-result %>% split(.$nvar) %>% purrr::map(~ci.cvAUC(.$pred_RF,.$true,folds=.$iter))
-  
-  AUC_df<-rbind(bind_rows(AUCs %>% purrr::map(~data.frame(AUC=.$cvAUC,SE=.$se,lower=.$ci[1],upper=.$ci[2],level=.$confidence,Model="LR"))),
-                bind_rows(AUCs2 %>% purrr::map(~data.frame(AUC=.$cvAUC,SE=.$se,lower=.$ci[1],upper=.$ci[2],level=.$confidence,Model="RF"))))
-  AUC_df$nvar<-rep(nvars_opts,2)
-  AUC_df
-  
-  
-  calib_fits=data.frame(nvar=NA,iter=NA,intc=NA,intc_LCI=NA,intc_UCI=NA,slope=NA,slope_LCI=NA,slope_UCI=NA)
-  for (nvars in nvars_opts){
-    for (each in 1:iter){
-      data.temp <- result %>% filter(nvar==nvars & iter==each)
-      
-      intercept <- glm(true~1,offset=log(pred_glm/(1-pred_glm)),family="binomial",data=data.temp)
-      #summary(intercept) #Should have intercept of 0. intercept is calibration intercept
-      slope <- glm(true~log(pred_glm/(1-pred_glm)),family="binomial",data=data.temp)
-      #summary(slope) #Should have slope of 1. beta coefficient = slope=calibration slope
-      
-      df=data.frame(nvar=nvars,iter=each,
-                    intc=coef(intercept),intc_LCI=confint(intercept)[1],intc_UCI=confint(intercept)[2],
-                    slope=coef(slope)[2],slope_LCI=confint(slope)[2,1],slope_UCI=confint(slope)[2,2])
-      calib_fits=rbind(calib_fits,df)
-      
-    }
-  }
-  calib_fits<-calib_fits[-1,]
-  calib <- calib_fits %>% group_by(nvar) %>% summarize(mean(intc),mean(intc_LCI),mean(intc_UCI),
-                                                       mean(slope),mean(slope_LCI),mean(slope_UCI))
-  names(calib) <- c("nvar","intc","intc_LCI","intc_UCI","slope","slope_LCI","slope_UCI")  #renaming
-  
-  decilesCC <- result %>% split(.,list(.$iter,.$nvar),drop=TRUE) %>% purrr::map(. %>% arrange(pred_glm)) %>% #now have a df for each iteration of each nvar
-    purrr::map(~mutate(.x, decile_glm=ntile(pred_glm,10))) %>% #create predicted glm decile groups; equivalent to: purrr::map(list_resB, ~mutate(.x, decile_glm=ntile(pred_glm,10))); str(temp3)
-    bind_rows(.) %>% split(.,f=.$nvar) %>% #a list of df for each nvar which contains all iter for that nvar. "nest" might be better for this
-    purrr::map(., . %>% group_by(decile_glm) %>% summarize(mean(true),mean(pred_glm))) #for each decile in each nvar, have an avg true and avg predicted
-  
-  output<-list(df_imps=df_imps_full,result=result,train_record=train_record,test_record=test_record,AUC_df=AUC_df,decilesCC=decilesCC,calib=calib,iter=iter,nvars_opts=nvars_opts)
-  
-}
-
 ####################
 #GEMS CASES
 ################### import GEMS data ####
 #starting with full dataset
-gems1_orig <- read.csv("C://gems1.csv", header=T)
+gems1_orig <- read.csv("", header=T)
 #22567 observations, has type=Case/Control
+
 
 gems1=gems1_orig %>% select(site,	type, f3_gender,	f3_drh_turgor	,	f3_drh_iv	,	f3_drh_hosp,
                             f4a_relationship,	f4a_dad_live	,					
@@ -229,40 +154,65 @@ gems1=gems1_orig %>% select(site,	type, f3_gender,	f3_drh_turgor	,	f3_drh_iv	,	f
                             f4b_trt_pres_nalid,f4b_trt_pres_cpnr,f4b_trt_pres_slpy,
                             f4b_trt_pres_othr
                             
+                            # f4b_whz, f4b_whz_f, f4b_med_whz, f4b_med_whz_f,
+                            # f4b_find_whz, f4b_find_whz_f, f4b_find_med_whz, f4b_find_med_whz_f,
+                            # f4b_rehyd_whz, f4b_rehyd_whz_f, f4b_rehyd_med_whz, f4b_rehyd_med_whz_f,
+                            # f4b_out_whz, f4b_out_whz_f, f4b_out_med_whz, f4b_out_med_whz_f,
+                            # f4b_last_whz, f4b_last_whz_f, f4b_last_med_whz, f4b_last_med_whz_f,
+                            # f5_whz, f5_whz_f, f5_med_whz, f5_med_whz_f,
+                            # f7_whz, f7_whz_f, f7_med_whz, f7_med_whz_f 
+                            
 )
+
 
 #variables w/ small cell sizes, dropping for now: "f4a_chlorine","f4a_primcare","f4a_mom_live",
 # "f4a_drh_undrink","f4a_drh_fever","f4a_drh_breath","f4b_skin_pinch",
 # "f5_diag_meng"
 
-################### define variables ####
+#stuff from Ben
 gems1=gems1 %>% mutate(any_breast_fed=factor(case_when((f4a_breastfed==1|f4a_breastfed==2)~1,TRUE~0))) #SMA dichotomizing breastfeeding
 gems1=gems1 %>% mutate(any_breast_fed2=factor(case_when((f4a_breastfed==0|f4a_breastfed==1)~0,TRUE~1)))
 gems1=gems1 %>% mutate(cont=case_when(site %in% c(1,2,3,4) ~ 1,
-                                      TRUE ~ 2)) #creating "cont"inent variable
+                                      TRUE ~ 2)) #SMA creating "cont"inent variable
 gems1$site=as.factor(gems1$site)
 gems1$index=1:dim(gems1)[1] #SMA creating an ID for each observation
 
+################### define variables ####
 cases_orig <- gems1 %>% filter(type=="Case")
+#9439
 
 cases_orig=cases_orig %>% mutate(haz_dif = f4b_haz - f5_haz)
+# summary(cases$haz_dif)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# -9.1100 -0.0800  0.1800  0.2027  0.4800  8.3500    1051 
 cases_orig=cases_orig %>% mutate(haz_1.0=(case_when(haz_dif>=1.0 ~ 1, TRUE~0)))
+# # table(cases$haz_1.0)
+# # 0    1 
+# # 9270  169 
 cases_orig=cases_orig %>% mutate(haz_0.5=(case_when(haz_dif>=0.5 ~ 1, TRUE~0)))
+# # table(cases$haz_0.5)
+# # 0    1 
+# # 8907  532 
+#see notebook for manual checks
 
 cases_orig=cases_orig %>% mutate(change_ht = f5_height - f4b_height)
+# summary(cases$change_ht)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# -25.033   0.800   1.633   1.772   2.500  41.833    1051 
 
 # #f4b_outcome: 1=resolved; 2=improved; 3=no better; 4=worse; 5=died at hosp; 6=unknown/LTF
 # #f5_child_health: 1=appears healthy; 2=improved but not back to normal; 3=no better; 4=worse; 5=died
+#death_all: any death after hospital admit
 cases_orig=cases_orig %>% mutate(death_all=(case_when(
-  f4b_outcome==5 ~ 1,
-  f5_child_health==5 ~ 1, 
-  TRUE~0)),
-  death_hosp=(case_when(
-    f4b_outcome==5 ~ 1,
-    TRUE~0)),
-  death_home=(case_when(
-    (f4b_outcome!=5 & f5_child_health==5) ~1,
-    TRUE~0)))
+                                    f4b_outcome==5 ~ 1,
+                                    f5_child_health==5 ~ 1, 
+                                    TRUE~0)),
+                                 death_hosp=(case_when(
+                                    f4b_outcome==5 ~ 1,
+                                    TRUE~0)),
+                                 death_home=(case_when(
+                                    (f4b_outcome!=5 & f5_child_health==5) ~1,
+                                    TRUE~0)))
 # table(cases_orig$death_all)
 # 0    1 
 # 9249  190
@@ -295,14 +245,31 @@ cases_orig <- cases_orig %>% mutate(f4a_ms_water=case_when((f4a_ms_water==14)~18
 
 #assuming f5_child_health==0 are also missing since aren't in codebook
 cases_orig=cases_orig %>% mutate(f5_child_health_miss=(case_when(f5_child_health==0 ~ 9, TRUE~f5_child_health_miss)))# table(cases$f4b_outcome_miss)
+# # 1    2    3    4    5    6    9 
+# # 614 4179 4187   11   49  398    1
+# table(is.na(cases$f4b_outcome))
+# # FALSE  TRUE 
+# # 9438     1
+# table(cases$f5_child_health_miss)
+# # 1    2    3    4    5    9
+# # 6266  834  839  470  186  844
+# table(is.na(cases$f5_child_health))
+# # FALSE  TRUE 
+# # 8604   835 
 
 #very few 5 so put in other category
 cases_orig$f4a_disp_feces <- as.numeric(cases_orig$f4a_disp_feces)
 cases_orig=cases_orig %>% mutate(f4a_disp_feces=(case_when(f4a_disp_feces==5 ~ 6, TRUE~f4a_disp_feces)))
 
 #combining categories. not sure what 0 is, isn't in dictionary
+table(cases_orig$f4a_trt_method)
+#    0    1    2    3    4    5    6    7 
+# 6740    3  656  751 1197   73   14    5
 cases_orig$f4a_trt_method <- as.numeric(cases_orig$f4a_trt_method)
 cases_orig=cases_orig %>% mutate(f4a_trt_method=(case_when(f4a_trt_method==1 | f4a_trt_method==6 | f4a_trt_method==7 ~ 7, TRUE~f4a_trt_method)))
+table(cases_orig$test)
+# 0    2    3    4    5    7 
+# 6740  656  751 1197   73   22 
 
 #creating antibiotic variables - want one var for each of: any antibiotic at any time, b/f seek care, when present care
 #stool collection antibiotic variables (can be from cases or controls)
@@ -336,17 +303,29 @@ cases_orig$abx_ever <- ifelse(cases_orig$abx_bf==1 | cases_orig$abx_at==1 | case
 
 cases_orig <- cases_orig %>% mutate(month=month(f4b_date_date))
 
+table(cases_orig$f4a_floor)
+#    1    2    3    4    6    7    8    9   10 
+# 2490  746    4    4   18  262 5813   89   13 
 cases_orig=cases_orig %>% mutate(f4a_floor=(case_when((f4a_floor==1 | f4a_floor==2 |
                                                          f4a_floor==3 | f4a_floor==4 | f4a_floor==10) ~ 0, #natural, rudimentary, other floor
                                                       TRUE~1))) #finished floor
+# table(cases_orig$test)
+# # 0    1 
+# # 3257 6182 
 
 #combine to fewer categories: f4a_ms_water
+table(cases_orig$f4a_ms_water)
+#   1    2    3    4    5    6    7    8   10   11   12   13   15   16   17   18 
+# 668  933 3481   72  272  109  972  703  127   58   56  374  529  658  336   91 
 cases_orig=cases_orig %>% mutate(f4a_ms_water=(case_when((f4a_ms_water==6 | f4a_ms_water==13 | f4a_ms_water==14) ~ 0, #surface 
-                                                         (f4a_ms_water==4 | f4a_ms_water==5 | f4a_ms_water==12 | f4a_ms_water==16) ~ 1, #unimproved
-                                                         (f4a_ms_water==3 | f4a_ms_water==7 | f4a_ms_water==8 | f4a_ms_water==9 |
-                                                            f4a_ms_water==10 | f4a_ms_water==11 | f4a_ms_water==15 | f4a_ms_water==17) ~ 2, #other improved
-                                                         (f4a_ms_water==1 | f4a_ms_water==2) ~ 3, #piped
-                                                         TRUE~4))) #other
+                                                 (f4a_ms_water==4 | f4a_ms_water==5 | f4a_ms_water==12 | f4a_ms_water==16) ~ 1, #unimproved
+                                                 (f4a_ms_water==3 | f4a_ms_water==7 | f4a_ms_water==8 | f4a_ms_water==9 |
+                                                    f4a_ms_water==10 | f4a_ms_water==11 | f4a_ms_water==15 | f4a_ms_water==17) ~ 2, #other improved
+                                                 (f4a_ms_water==1 | f4a_ms_water==2) ~ 3, #piped
+                                                 TRUE~4))) #other
+# table(cases_orig$test)
+# 0    1    2    3    4 
+# 483 1058 6206 1601   91 
 # #use JMP drinking water services ladder
 # #surface (subset of unimproved)
 # 6-pond/lake
@@ -372,10 +351,17 @@ cases_orig=cases_orig %>% mutate(f4a_ms_water=(case_when((f4a_ms_water==6 | f4a_
 # #other
 # 18-other
 
+summary(cases_orig$f4a_relationship)
+#    1    2    3    4    5    6    7    8    9   10 
+# 8941   81   49   12  206    6  125    6    2   11 
 #creating a combined category for non-father male relation OR non relation (4,6,8,9)
 cases_orig$f4a_relationship <- as.numeric(cases_orig$f4a_relationship)
 cases_orig=cases_orig %>% mutate(f4a_relationship=(case_when((f4a_relationship==4 | f4a_relationship==6 | f4a_relationship==8 | f4a_relationship==9) ~ 9, #non-father male relation OR 
-                                                             TRUE~f4a_relationship))) #what was originally
+                                                         TRUE~f4a_relationship))) #what was originally
+
+#stunting at f-up, not growth faltering
+cases_orig=cases_orig %>% mutate(post.stunt=(case_when(f5_haz<(-2) ~ 1, TRUE~0)))
+#table(cases_orig$f5_haz,cases_orig$post.stunt)
 
 #convert these to factors
 vars <- c("f4a_ms_water","f4a_fac_waste","f4a_dad_live","f4b_recommend",
@@ -410,18 +396,34 @@ cases_orig[vars] <- lapply(cases_orig[vars], factor)
 
 #keep based on Brader HAZ plausability
 cases_orig$keep <- ifelse((cases_orig$base_age<=6 & cases_orig$fup_days>=49 & cases_orig$fup_days<=60 & cases_orig$change_ht<=8),1,
-                          ifelse((cases_orig$base_age<=6 & cases_orig$fup_days>=61 & cases_orig$fup_days<=91 & cases_orig$change_ht<=10),1,
-                                 ifelse((cases_orig$base_age>6 & cases_orig$fup_days>=49 & cases_orig$fup_days<=60 & cases_orig$change_ht<=4),1,
-                                        ifelse((cases_orig$base_age>6 & cases_orig$fup_days>=61 & cases_orig$fup_days<=91 & cases_orig$change_ht<=6),1,
-                                               0))))
+                    ifelse((cases_orig$base_age<=6 & cases_orig$fup_days>=61 & cases_orig$fup_days<=91 & cases_orig$change_ht<=10),1,
+                    ifelse((cases_orig$base_age>6 & cases_orig$fup_days>=49 & cases_orig$fup_days<=60 & cases_orig$change_ht<=4),1,
+                    ifelse((cases_orig$base_age>6 & cases_orig$fup_days>=61 & cases_orig$fup_days<=91 & cases_orig$change_ht<=6),1,
+                    0))))
+table(cases_orig$keep)
+# 0    1 
+# 215 8207 
+#change_ht and f4b_haz_f missing for those w/o fup so no 0's listed, are all missing
 
 cases_gf <- cases_orig %>% filter((fup_days>=49 & fup_days<=91)& #n=9329; f-up time period criteria
-                                    (f4b_haz_f==0)& #n=9287; f4b_haz_f: Flag for _ZLEN<-6 or _ZLEN>6
-                                    (abs(haz_dif)<=3.0)& #n=8255
-                                    (keep==1)& #n=8166
-                                    (change_ht>=-1.5)& #8055
-                                    (f5_status==1)& #n=8053; (==1 60d f-up conducted, 0==not conducted)
-                                    (!is.na(haz_dif))) #n=8053
+         (f4b_haz_f==0)& #n=9287; f4b_haz_f: Flag for _ZLEN<-6 or _ZLEN>6
+         (abs(haz_dif)<=3.0)& #n=8255
+         (keep==1)& #n=8166
+         (change_ht>=-1.5)& #8055
+         (f5_status==1)& #n=8053; (==1 60d f-up conducted, 0==not conducted)
+         (!is.na(haz_dif))) #n=8053
+
+#cases_gf is now those who meet HAZ plausability and have follow-up HAZ measurement
+# table(cases_gf$f4b_outcome_miss,is.na(cases_gf$f5_haz),cases_gf$death_all)
+# FALSE
+# 1   575
+# 2  3566
+# 3  3592
+# 4     4
+# 6   316
+#316 kids were LTF in hosp but still have fup HAZ and aren't dead so keep in growth falter analysis
+
+
 
 ################### drop missing since can't have missing in RF, define "names" variables interested in ####
 complete_gf <- cases_gf %>% filter(!is.na(f4a_dad_live)&!is.na(f4a_prim_schl)&!is.na(f4a_slp_rooms)&!is.na(f4a_water_avail)&
@@ -435,7 +437,9 @@ complete_gf <- cases_gf %>% filter(!is.na(f4a_dad_live)&!is.na(f4a_prim_schl)&!i
                                      !is.na(f4a_drh_cough_miss))
 #8053 to 7639 observations
 
-# select variables we're interested in.
+
+
+# select variables we're interested in. have checked all appropriate ones are factor
 names <- c("site","f3_gender","f3_drh_turgor","f3_drh_iv","f3_drh_hosp",
            "f4a_relationship","f4a_dad_live",
            "f4a_prim_schl","f4a_ppl_house","f4a_yng_children",
@@ -485,21 +489,76 @@ names <- c("site","f3_gender","f3_drh_turgor","f3_drh_iv","f3_drh_hosp",
            "f4b_skin_flaky","f4b_observe_stool","f4b_nature_stool",   
            "f4b_recommend",  
            "f4b_admit", 
+           #"wealth_index", 
            "base_age"
+           #f5_ variables are at f-up, don't have to inform prediction at hosp admit; haven't checked if any of these f5_ should be factors
+           # 'f5_exp_drh', 'f5_exp_dys', 'f5_exp_cou', 'f5_exp_fever', 
+           # 'f5_diag_typ', 'f5_diag_mal', 'f5_diag_pne',
+           # 'f5_exp_rectal', 'f5_exp_convul', 'f5_exp_arthritis',
+           # 'f5_rectal', 'f5_bipedal', 'f5_abn_hair', 'f5_under_nutr', 'f5_skin_flaky',
+           # 'f5_ms_water_factor', 'f5_main_cont', 'f5_treat_water', 'f5_trt_meth', 
+           # 'f5_wash_where', 'f5_wash_noptap', 'f5_wash_tap', 
+           # 'f5_wash_basin', 'f5_wash_soap', 'f5_wash_ash', 
+           # 'f5_child_feces_factor', 'f5_feces_visible', 'f5_house_feces_factor',
 )
 
+#table(cases$f5_child_health_miss,is.na(cases$f5_skin_flaky))
+#f4a_share_fac leads to some being dropped, keep considering for now
+#variables w/ small cell sizes, dropping for now: "f4a_chlorine","f4a_primcare","f4a_mom_live",
+# "f4a_drh_undrink","f4a_drh_fever","f4a_drh_breath","f4b_skin_pinch",
+# "f5_diag_meng","f5_wash_piped","f4a_fetch_water","f4a_trip_day","f4a_trip_week",
+# f4a_notrt_water, f4b_volume, 
+#these lead to lots being dropped >> are physical exam at f-up, not useful for predicting what happens at enrollment, so not analyze anymore
+#f5_rectal
+#f5_bipedal
+#f5_abn_hair
+#f5_under_nutr
+#f5_skin_flaky
+
+#checking all appropriates ones are factorized
+# temp<-temp_gf[names]
+# str(temp)
+# summary(temp)
+
 ################### cases into age groups, continents for growth faltering ####
+table(complete_gf$agegroup)
+# 1    2    3 
+# 3279 2729 1877 
+summary(complete_gf$agegroup)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 1.000   1.000   2.000   1.822   2.000   3.000
+#table(cases$base_age,cases$agegroup)
+#agegroup 1=0-11mo, 2=12-23mo, 3=24-50mo
+#summary(cases$base_age)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.00    8.00   13.00   17.01   23.00   59.00 
 cases_gf_age1 <- complete_gf %>% filter(agegroup == 1)
 cases_gf_age2 <- complete_gf %>% filter(agegroup == 2)
 cases_gf_age3 <- complete_gf %>% filter(agegroup == 3)
 cases_gf_age4 <- complete_gf %>% filter(agegroup == 1 | agegroup==2)
+
+#agegroup 1=0-11mo, 2=12-23mo, 3=24-50mo
+#3306+2606=5912
+
+cases_gf_Gambia <- complete_gf %>% filter(site == 1)
+cases_gf_Mali <- complete_gf %>% filter(site == 2)
+cases_gf_Mozam <- complete_gf %>% filter(site == 3)
+cases_gf_Kenya <- complete_gf %>% filter(site == 4)
+cases_gf_India <- complete_gf %>% filter(site == 5)
+cases_gf_Bang <- complete_gf %>% filter(site == 6)
+cases_gf_Pak <- complete_gf %>% filter(site == 7)
+
+cases_gf_Afr <- complete_gf %>% filter(site==1 | site==2 | site==3 | site==4)
+cases_gf_Asia <- complete_gf %>% filter(site==5 | site==6 | site==7)
+
+cases_gf_notStunt <- complete_gf %>% filter(f4b_haz >=-2)
 
 ################### merge in etiology info ####
 complete_gf_afe<-complete_gf
 #drop the extra 1 at the end of each caseid
 complete_gf_afe$caseid <- as.numeric(substr(complete_gf_afe$caseid,1,9))
 #dplyr version of substr: https://stringr.tidyverse.org/reference/str_sub.html
-AFes <- read.csv("C://GEMS with AFes.csv", header=T)
+AFes <- read.csv("/GEMS with AFes.csv", header=T)
 #is no data here for controls, so just drop those
 AFes <- AFes %>% filter(case.control==1)
 complete_gf_afe <- complete_gf_afe %>% left_join(AFes, by=c("caseid"="Case.ID")) %>%
@@ -512,13 +571,18 @@ complete_gf_afe <- complete_gf_afe %>% left_join(AFes, by=c("caseid"="Case.ID"))
   mutate(shigella_afe_0.3=(case_when(shigella_eiec_afe>=0.3 ~ 1, TRUE~0)),
          crypto_afe_0.3=(case_when(cryptosporidium_afe>=0.3 ~ 1, TRUE~0)),
          viral_0.3=(case_when((astrovirus_afe>=0.3 | norovirus_gii_afe>=0.3 |
-                                 rotavirus_afe>=0.3 | sapovirus_afe>=0.3 |
-                                 adenovirus_40_41_afe>=0.3)~ 1, TRUE~0))) %>%
+                             rotavirus_afe>=0.3 | sapovirus_afe>=0.3 |
+                             adenovirus_40_41_afe>=0.3)~ 1, TRUE~0))) %>%
   mutate(shigella_afe_0.7=(case_when(shigella_eiec_afe>=0.7 ~ 1, TRUE~0)),
          crypto_afe_0.7=(case_when(cryptosporidium_afe>=0.7 ~ 1, TRUE~0)),
          viral_0.7=(case_when((astrovirus_afe>=0.7 | norovirus_gii_afe>=0.7 |
                                  rotavirus_afe>=0.7 | sapovirus_afe>=0.7 |
                                  adenovirus_40_41_afe>=0.7)~ 1, TRUE~0)))
+  
+#table(test2$shigella_eiec_afe,test2$shigella_afe)
+#table(test$viral)
+#cbind(test$viral,test$astrovirus_afe,test$norovirus_gii_afe,test$rotavirus_afe,test$sapovirus_afe,test$adenovirus_40_41_afe)
+
 
 ################### descriptive for pub ####
 table(complete_gf$haz_0.5)
@@ -563,8 +627,9 @@ hist(temp$f4b_haz, main="Baseline HAZ of cases who growth falter (difHAZ0.5")
 #overlapping histogram of baseline HAZ among all
 p1 <- hist(complete_gf[which(complete_gf$haz_0.5==0),]$f4b_haz)
 p2 <- hist(complete_gf[which(complete_gf$haz_0.5==1),]$f4b_haz)
-#jpeg("C://overlap_hist.jpg",width=600,height=480,quality=400)
-plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,2000),xlab="baseline HAZ",main="Growth faltering by baseline HAZ")
+#jpeg("/overlap_hist.jpg",width=600,height=480,quality=400)
+#png("/overlap_hist.png",units="px",width=3000,height=2400,res=300)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,2000),xlab="baseline HAZ",main="Growth Faltering in GEMS by Baseline HAZ")
 plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,2000), add=T)
 legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
 dev.off()
@@ -573,26 +638,194 @@ dev.off()
 summary((complete_gf[which(complete_gf$haz_0.5==0),])$f4b_haz)
 summary((complete_gf[which(complete_gf$haz_0.5==1),])$f4b_haz)
 
+#median baseline HAZ by site
+table(complete_gf$site)
+table(complete_gf$haz_0.5,complete_gf$site)
+table(complete_gf$haz_1.0,complete_gf$site)
+summary(cases_gf_Gambia$f4b_haz)
+summary(cases_gf_Mali$f4b_haz)
+summary(cases_gf_Mozam$f4b_haz)
+summary(cases_gf_Kenya$f4b_haz)
+summary(cases_gf_India$f4b_haz)
+summary(cases_gf_Bang$f4b_haz)
+summary(cases_gf_Pak$f4b_haz)
 
-t.test(complete_gf[which(complete_gf$haz_0.5==0),]$f4b_haz,complete_gf[which(complete_gf$haz_0.5==1),]$f4b_haz)
-# Welch Two Sample t-test
-# 
-# data:  complete_gf[which(complete_gf$haz_0.5 == 0), ]$f4b_haz and complete_gf[which(complete_gf$haz_0.5 == 1), ]$f4b_haz
-# t = -14.698, df = 2777.3, p-value < 2.2e-16
-# alternative hypothesis: true difference in means is not equal to 0
-# 95 percent confidence interval:
-#   -0.5649487 -0.4319526
-# sample estimates:
-#   mean of x mean of y 
-# -1.384248 -0.885797 
+p1 <- hist(complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==1),]$f4b_haz)
+p2 <- hist(complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==1),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,150),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in the Gambia")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,150), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==1),])$f4b_haz)
+summary((complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==1),])$f4b_haz)
+
+p1 <- hist(complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==2),]$f4b_haz)
+p2 <- hist(complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==2),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,500),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in Mali")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,500), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==2),])$f4b_haz)
+summary((complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==2),])$f4b_haz)
+
+p1 <- hist(complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==3),]$f4b_haz)
+p2 <- hist(complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==3),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,150),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in Mozambique")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,150), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==3),])$f4b_haz)
+summary((complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==3),])$f4b_haz)
+
+p1 <- hist(complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==4),]$f4b_haz)
+p2 <- hist(complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==4),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,150),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in Kenya")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,150), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==4),])$f4b_haz)
+summary((complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==4),])$f4b_haz)
+
+p1 <- hist(complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==5),]$f4b_haz)
+p2 <- hist(complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==5),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,300),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in India")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,300), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==5),])$f4b_haz)
+summary((complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==5),])$f4b_haz)
+
+p1 <- hist(complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==6),]$f4b_haz)
+p2 <- hist(complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==6),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,300),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in Bangladesh")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,300), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==6),])$f4b_haz)
+summary((complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==6),])$f4b_haz)
+
+p1 <- hist(complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==7),]$f4b_haz)
+p2 <- hist(complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==7),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,150),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in Pakistan")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,150), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((complete_gf[which(complete_gf$haz_0.5==0 & complete_gf$site==7),])$f4b_haz)
+summary((complete_gf[which(complete_gf$haz_0.5==1 & complete_gf$site==7),])$f4b_haz)
+
+
+#median baseline HAZ by age
+table(complete_gf$agegroup)
+table(complete_gf$haz_0.5,complete_gf$agegroup)
+table(complete_gf$haz_1.0,complete_gf$agegroup)
+
+p1 <- hist(cases_gf_age1[which(cases_gf_age1$haz_0.5==0 & cases_gf_age1$site==1),]$f4b_haz)
+p2 <- hist(cases_gf_age1[which(cases_gf_age1$haz_0.5==1 & cases_gf_age1$site==1),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,80),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in 0-11mo")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,80), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((cases_gf_age1[which(cases_gf_age1$haz_0.5==0 & cases_gf_age1$site==1),])$f4b_haz)
+summary((cases_gf_age1[which(cases_gf_age1$haz_0.5==1 & cases_gf_age1$site==1),])$f4b_haz)
+
+p1 <- hist(cases_gf_age2[which(cases_gf_age2$haz_0.5==0 & cases_gf_age2$site==1),]$f4b_haz)
+p2 <- hist(cases_gf_age2[which(cases_gf_age2$haz_0.5==1 & cases_gf_age2$site==1),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,80),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in 12-23mo")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,80), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((cases_gf_age2[which(cases_gf_age2$haz_0.5==0 & cases_gf_age2$site==1),])$f4b_haz)
+summary((cases_gf_age2[which(cases_gf_age2$haz_0.5==1 & cases_gf_age2$site==1),])$f4b_haz)
+
+p1 <- hist(cases_gf_age3[which(cases_gf_age3$haz_0.5==0 & cases_gf_age3$site==1),]$f4b_haz)
+p2 <- hist(cases_gf_age3[which(cases_gf_age3$haz_0.5==1 & cases_gf_age3$site==1),]$f4b_haz)
+plot( p1, col=rgb(1,0,0,1/4), xlim=c(-6,6),ylim=c(0,30),xlab="baseline HAZ",main="Growth faltering by baseline HAZ \n in 24-59mo")
+plot( p2, col=rgb(0,0,1,1/4),  xlim=c(-6,6),ylim=c(0,30), add=T)
+legend('topright',c('no growth falter','growth falter'),fill = c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)), bty = 'n')
+summary((cases_gf_age3[which(cases_gf_age3$haz_0.5==0 & cases_gf_age3$site==1),])$f4b_haz)
+summary((cases_gf_age3[which(cases_gf_age3$haz_0.5==1 & cases_gf_age3$site==1),])$f4b_haz)
+
 
 #dates 
 options(max.print=1500)
 table(gems1_orig$enrolldate) #Dec 2007 - Mar 2011
 
 
+################### FUNCTion for var screening, regression fitting, AUC calc ####
+CPR.funct <- function(data,outcome,iter,nvars_opts){
+  out=ranger(as.formula(paste(outcome,'~',paste(names,collapse="+"),sep="")),data=data,num.trees=1000,importance="impurity")
+  imps=importance(out)
+  df_imps_full=data.frame(names=names(imps),var_red=as.numeric(imps)) %>% arrange(desc(var_red))
+
+
+  result=data.frame(iter=NA,nvar=NA,true=NA,pred_glm=NA,pred_RF=NA)
+  test_record <- NA
+  train_record <- NA
+
+  for (each in 1:iter){
+    print(each)
+    train=data %>% sample_frac(.80,replace=F)
+
+    test=data[-which(data$index %in% train$index),]
+
+    train_record <- c(train_record,table(train[,outcome])[["1"]]) #data$haz_0.5 is equivalent to data[,"haz_0.5"]
+    test_record <- c(test_record,table(test[,outcome])[["1"]])
+
+
+    out=ranger(as.formula(paste(outcome,'~',paste(names,collapse="+"),sep="")),data=train,num.trees=1000,importance="impurity")
+    df_imps=data.frame(names=names(ranger::importance(out)),imps=ranger::importance(out)) %>% arrange(desc(imps))
+    for (nvars in nvars_opts){
+
+      print(nvars)
+      out1=glm(as.formula(paste(outcome,'~',paste(df_imps$names[1:nvars],collapse="+"),sep="")),data=train,family="binomial",control=glm.control(maxit=50))
+      out2=ranger(as.formula(paste(outcome,'~',paste(df_imps$names[1:nvars],collapse="+"),sep="")),data=train,num.trees=1000)
+
+      df=data.frame(iter=each,nvar=nvars,true=test[[outcome]],pred_glm=as.numeric(predict(out1,newdata=test,type="response")),pred_RF=as.numeric(predict(out2,data=test,type="response")$predictions))
+      result=rbind(result,df)
+    }
+  }
+  result<-result[-1,]
+  train_record<-train_record[-1]
+  test_record<-test_record[-1]
+
+  AUCs<-result %>% split(.$nvar) %>% purrr::map(~ci.cvAUC(.$pred_glm,.$true,folds=.$iter))
+  AUCs2<-result %>% split(.$nvar) %>% purrr::map(~ci.cvAUC(.$pred_RF,.$true,folds=.$iter))
+
+  AUC_df<-rbind(bind_rows(AUCs %>% purrr::map(~data.frame(AUC=.$cvAUC,SE=.$se,lower=.$ci[1],upper=.$ci[2],level=.$confidence,Model="LR"))),
+                bind_rows(AUCs2 %>% purrr::map(~data.frame(AUC=.$cvAUC,SE=.$se,lower=.$ci[1],upper=.$ci[2],level=.$confidence,Model="RF"))))
+  AUC_df$nvar<-rep(nvars_opts,2)
+  AUC_df
+
+
+  calib_fits=data.frame(nvar=NA,iter=NA,intc=NA,intc_LCI=NA,intc_UCI=NA,slope=NA,slope_LCI=NA,slope_UCI=NA)
+  for (nvars in nvars_opts){
+    for (each in 1:iter){
+      data.temp <- result %>% filter(nvar==nvars & iter==each)
+
+      intercept <- glm(true~1,offset=log(pred_glm/(1-pred_glm)),family="binomial",data=data.temp)
+      #summary(intercept) #Should have intercept of 0. intercept is calibration intercept
+      slope <- glm(true~log(pred_glm/(1-pred_glm)),family="binomial",data=data.temp)
+      #summary(slope) #Should have slope of 1. beta coefficient = slope=calibration slope
+
+      df=data.frame(nvar=nvars,iter=each,
+                    intc=coef(intercept),intc_LCI=confint(intercept)[1],intc_UCI=confint(intercept)[2],
+                    slope=coef(slope)[2],slope_LCI=confint(slope)[2,1],slope_UCI=confint(slope)[2,2])
+      calib_fits=rbind(calib_fits,df)
+
+    }
+  }
+  calib_fits<-calib_fits[-1,]
+  calib <- calib_fits %>% group_by(nvar) %>% summarize(mean(intc),mean(intc_LCI),mean(intc_UCI),
+                                                 mean(slope),mean(slope_LCI),mean(slope_UCI))
+  names(calib) <- c("nvar","intc","intc_LCI","intc_UCI","slope","slope_LCI","slope_UCI")  #renaming
+  
+  decilesCC <- result %>% split(.,list(.$iter,.$nvar),drop=TRUE) %>% purrr::map(. %>% arrange(pred_glm)) %>% #now have a df for each iteration of each nvar
+    purrr::map(~mutate(.x, decile_glm=ntile(pred_glm,10))) %>% #create predicted glm decile groups; equivalent to: purrr::map(list_resB, ~mutate(.x, decile_glm=ntile(pred_glm,10))); str(temp3)
+    bind_rows(.) %>% split(.,f=.$nvar) %>% #a list of df for each nvar which contains all iter for that nvar. "nest" might be better for this
+    purrr::map(., . %>% group_by(decile_glm) %>% summarize(mean(true),mean(pred_glm))) #for each decile in each nvar, have an avg true and avg predicted
+  
+  output<-list(df_imps=df_imps_full,result=result,train_record=train_record,test_record=test_record,AUC_df=AUC_df,decilesCC=decilesCC,calib=calib,iter=iter,nvars_opts=nvars_opts)
+  
+}
+# output<-CPR.funct(complete_gf,"haz_0.5",3,c(2,5))
+# str(output) #output[["result"]] output[["train_record"]] output[["test_record"]]
+
+
 ################### MAIN growth falter all cases ####
 main <- CPR.funct(data=complete_gf,outcome="haz_0.5",iter=100,nvars_opts=c(1:10,15,20,30,40,50))
+#save(main, file = "/main_df_GEMS059.Rdata")
+
 main[["df_imps"]]
 main[["AUC_df"]]
 main[["calib"]]
@@ -786,9 +1019,16 @@ main[["calib"]]
 # 14    40 0.00307   -0.128    0.132 0.888     0.752      1.03
 # 15    50 0.00351   -0.128    0.133 0.870     0.736      1.01
 
+#intercept <0, overestimation
+#intercept >0, underestimation
+#slopes <1, estimated risks too extreme in both directions
+#slope >1 risk estimates to moderate
+#slightly positive slope indicates slight underestimation
+
 temp <- main[["decilesCC"]][c("1","2","3","4","5","6","7","8","9","10","15","20","30","40","50")]
 names(temp) <- c("1-var","2-var","3-var","4-var","5-var","6-var","7-var","8-var","9-var","10-var","15-var","20-var","30-var","40-var","50-var")  #renaming
-#jpeg("C://GF_CC_GEMS059.jpg",width=600,height=480,quality=400)
+#jpeg("/GF_CC_GEMS059.jpg",width=600,height=480,quality=400)
+#png("/GF_CC_GEMS059.png",units="px",width=3000,height=2400,res=300)
 plot(x=seq(0,1,by=0.1),y=seq(0,1,by=0.1),type="l",
      xlab="Predicted Probability",ylab="Observed Proportion",
      main=expression(paste("Calibration Curve:","">=0.5,Delta,"HAZ in cases 0-59mo in GEMS")),
@@ -799,7 +1039,11 @@ legend("topleft",col=c("red","blue"),c("5-variable","10-variable"),pch=c(1,2),ce
 dev.off()
 
 AUC_df <- main[["AUC_df"]]
-#jpeg("C://GF_AUCs_GEMS059.jpg",width=600,height=480,quality=400)
+#save(AUC_df, file = "/AUC_df_GEMS059.Rdata")
+#load(file = "/AUC_df_GEMS059.Rdata")
+
+#jpeg("/GF_AUCs_GEMS059.jpg",width=600,height=480,quality=400)
+#png("/GF_AUCs_GEMS059.png",units="px",width=3000,height=2400,res=300)
 par(mar=c(5,5,4,2))
 plot(AUC_df$nvar[1:length(main[["nvars_opts"]])[1]],AUC_df$AUC[1:length(main[["nvars_opts"]])[1]],
      xlab="number of variables",ylab="AUC",
@@ -809,7 +1053,7 @@ plot(AUC_df$nvar[1:length(main[["nvars_opts"]])[1]],AUC_df$AUC[1:length(main[["n
      pch=1,col="red",cex=2,lwd=2,cex.axis=1.5,cex.lab=1.5,cex.main=1.5)
 points(AUC_df$nvar[1:length(main[["nvars_opts"]])[1]],AUC_df$AUC[(length(main[["nvars_opts"]])[1]+1):dim(AUC_df)[1]],
        pch=2,col="blue",cex=2,lwd=2)
-legend("topleft",c("logistic reg","random forest"),col=c("red","blue"),pch=c(1,2),cex=1.5)
+legend("topleft",c("logistic regression","random forest regression"),col=c("red","blue"),pch=c(1,2),cex=1.5)
 dev.off()
 
 glm_gf <- glm(haz_0.5~base_age+f4b_haz+f4b_resp+f4b_temp+f4a_ppl_house+
@@ -858,6 +1102,10 @@ result<-main[["result"]]
 roc.data=result %>% split(.,list(.$nvar),drop=TRUE) %>% .$"10" %>% #subset to all the iter's (v-fold cross validations) for a given nvar (number of predictor variables in CPR)
   split(.,list(.$iter),drop=TRUE) #now have a list for each iter
 #iter are the folds
+# table($iter)
+# 1    2    3    4    5    6    7    8    9   10 
+# 1529 1529 1529 1529 1529 1529 1529 1529 1529 1529 
+#>>> now 1528 per iteration
 
 #reformatting the data so in the same layout as example for 
 predict_combo=list(NA)
@@ -879,7 +1127,19 @@ combo <- list(predict_combo,true_combo)
 names(combo) <- c("pred_glm","true")  #renaming
 str(combo)
 
+
+
 CV.roc.data <- cvAUC(predictions=combo$pred_glm, labels=combo$true) #perf is an object of class "performance" from the ROCR pckg
+
+# #find the desired points for obtained Sp for given Se
+# #options(max.print=2000)
+# Se.Sp<-data.frame(Se=round(roc.obj.5var$sensitivities,2),Sp=round(roc.obj.5var$specificities,2))
+# Se.Sp[which(Se.Sp$Se==0.85),]
+# #between the point (x0[i], y0[i]) and the point (x1[i], y1[i])
+# #x0, y0, x1 = x0, y1 = y0,
+
+# #Plot fold AUCs >>> SMA: a line for each fold, ie iteration
+# plot(CV.roc.data$perf, col="grey82", lty=3, main="Cross-validated ROC Curve")
 
 CV.roc.data.GF.2 <- CV.roc.data
 CV.roc.data.GF.5 <- CV.roc.data
@@ -888,9 +1148,9 @@ CV.roc.data.GF.10 <- CV.roc.data
 CV.roc.data.all <- list(CV.roc.data.GF.2,CV.roc.data.GF.5,CV.roc.data.GF.10)
 names(CV.roc.data.all) <- c("GF.2","GF.5","GF.10")  #renaming
 str(CV.roc.data.all)
-#save(CV.roc.data.all, file = "C://CV.roc.data.all.Rdata")
+#save(CV.roc.data.all, file = "/CV.roc.data.all.Rdata")
 
-#load(file = "C://CV.roc.data.all.Rdata")
+#load(file = "/CV.roc.data.all.Rdata")
 #(there's a better way to do this as a list...)
 CV.roc.data.GF.2 <- CV.roc.data.all$GF.2
 CV.roc.data.GF.5 <- CV.roc.data.all$GF.5
@@ -898,7 +1158,8 @@ CV.roc.data.GF.10 <- CV.roc.data.all$GF.10
 
 
 #Plot CV AUC >>> SMA: a single line of the averaged cross-validated ROC curve
-#jpeg("C://roc_GFonly.jpg",width=480,height=480,quality=400)
+#jpeg("/roc_GFonly.jpg",width=480,height=480,quality=400)
+#png("/roc_GFonly_highres.png",units="px",width=3000,height=3000,res=300)
 plot(CV.roc.data.GF.2$perf, avg="vertical", main="Cross-validated ROC Curves for Growth Faltering",
      col="#1c61b6", lwd=2, lty=2) 
 plot(CV.roc.data.GF.5$perf, avg="vertical", col="#1c61b6", lwd=2, lty=3, add=TRUE) 
@@ -1069,6 +1330,17 @@ main.011[["calib"]]
 # <dbl>  <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
 # 1     5 0.0104   -0.157    0.175 0.902     0.446      1.37
 # 2    10 0.0127   -0.156    0.178 0.818     0.414      1.23
+
+# temp <- main.011[["decilesCC"]][c("5", "10")]
+# names(temp) <- c("5-var","10-var")  #renaming
+# #names(temp) <- c("1-var","2-var","3-var","4-var","5-var","6-var","7-var","8-var","9-var","10-var","15-var","20-var","30-var","40-var","50-var")  #renaming
+# plot(x=seq(0,1,by=0.1),y=seq(0,1,by=0.1),type="l",
+#      xlab="Predicted Probability",ylab="Observed Proportion",
+#      #main="Calibration Curve")
+#      main=expression(paste("Calibration Curve:","">=0.5,Delta,"HAZ in cases 0-11mo in GEMS")))
+# points(temp$`5-var`$`mean(pred_glm)`,temp$`5-var`$`mean(true)`,col="red",pch=1)
+# points(temp$`10-var`$`mean(pred_glm)`,temp$`10-var`$`mean(true)`,col="blue",pch=2)
+# legend("topleft",col=c("red","blue"),c("5-variable","10-variable"),pch=c(1,2))
 
 ################### main + 12-23(age_2) growth falter ####
 main.1223 <- CPR.funct(data=cases_gf_age2,outcome="haz_0.5",iter=100,nvars_opts=c(5,10))
@@ -1893,7 +2165,10 @@ main.shig0.5[["calib"]]
 # 1     5 -0.00466   -0.180    0.167 0.979     0.768      1.21
 # 2    10 -0.00367   -0.180    0.168 0.963     0.753      1.19
 
+#intercept <0, overestimation
+#intercept >0, underestimation
 #slopes <1, estimated risks too extreme in both directions
+#slope >1 risk estimates to moderate
 #slightly positive slope indicates slight underestimation
 
 ################### main + crypto AF 0.5 growth falter ####
@@ -4257,10 +4532,1286 @@ main.1[["calib"]]
 # 1     5 -0.00626   -0.261    0.232 1.00      0.738      1.30
 # 2    10 -0.00652   -0.261    0.232 0.973     0.714      1.26
 
+################### by country growth falter - Gambia ####
+summary(cases_gf_Gambia$f4a_prim_schl)
+cases_gf_Gambia_complete <- cases_gf_Gambia %>% filter(f4a_prim_schl!=7) 
+cases_gf_Gambia_complete$f4a_prim_schl <- as.factor(ifelse(cases_gf_Gambia_complete$f4a_prim_schl==5,4,cases_gf_Gambia_complete$f4a_prim_schl))
+summary(cases_gf_Gambia_complete$f4a_prim_schl)
+
+GF.Gambia <- CPR.funct(data=cases_gf_Gambia_complete,outcome="haz_0.5",iter=100,nvars_opts=c(5,10))
+GF.Gambia[["df_imps"]]
+GF.Gambia[["AUC_df"]]
+GF.Gambia[["calib"]]
+
+# names      var_red
+# 1                f4b_haz 12.081798419
+# 2               base_age 10.363533497
+# 3               f4b_resp  6.991856813
+# 4          f4a_ppl_house  6.947900977
+# 5               f4b_temp  6.532431291
+# 6          f4a_slp_rooms  5.612991954
+# 7       f4a_yng_children  5.245031992
+# 8           f4a_drh_days  3.573676866
+# 9         f4a_offr_drink  2.282577523
+# 10       f4a_water_avail  2.204348401
+# 11         f4a_breastfed  2.117688293
+# 12         f4a_prim_schl  1.916993410
+# 13     f4a_drh_bellypain  1.856825325
+# 14          f4a_dad_live  1.724369164
+# 15          f4a_ms_water  1.601629969
+# 16         f4a_drh_vomit  1.595501416
+# 17      f4a_hometrt_none  1.576487169
+# 18        f4a_trt_method  1.569619967
+# 19         f4a_trt_water  1.502344796
+# 20      f4a_seek_outside  1.448387655
+# 21             f4b_mouth  1.324214523
+# 22       f4a_store_water  1.280962160
+# 23        f4a_seek_pharm  1.264150250
+# 24           f4a_ani_cow  1.236238240
+# 25         f4b_recommend  1.227286987
+# 26        f4a_drh_thirst  1.220630785
+# 27           f4a_ani_dog  1.201760664
+# 28        f4a_wash_nurse  1.186243698
+# 29       f4a_cur_thirsty  1.180782335
+# 30             f3_gender  1.173796344
+# 31    f4a_drh_cough_miss  1.171809190
+# 32       f4a_house_scoot  1.171169114
+# 33        f4a_house_elec  1.169054617
+# 34         f4a_wash_cook  1.168564671
+# 35         f4a_ani_other  1.159007361
+# 36         f4a_ani_sheep  1.127144874
+# 37           f4a_ani_cat  1.125463686
+# 38  f4a_drh_lethrgy_miss  1.107145445
+# 39        f4a_house_tele  1.104827941
+# 40          f4a_wash_use  1.080806943
+# 41              f4b_skin  1.068019303
+# 42          f4a_wash_def  1.045371731
+# 43        f4a_max_stools  1.036147861
+# 44       f4a_ani_rodents  1.033934845
+# 45         f4a_house_car  1.033871250
+# 46     f4a_hometrt_maize  1.032922583
+# 47      f4a_cur_drymouth  1.002075734
+# 48     f4a_water_pubwell  1.000189598
+# 49      f4a_water_pubtap  0.999856410
+# 50         f4a_drh_blood  0.985299405
+# 51          f4a_ani_goat  0.972714061
+# 52      f4a_drh_restless  0.964219346
+# 53        f4a_wash_child  0.959226089
+# 54        f4b_under_nutr  0.955495146
+# 55             f3_drh_iv  0.942002912
+# 56        f4a_house_cart  0.933262999
+# 57    f4a_water_deepwell  0.926180106
+# 58         f3_drh_turgor  0.923460704
+# 59          f4a_cur_skin  0.866925133
+# 60        f4a_water_well  0.851069991
+# 61      f4a_house_fridge  0.842305903
+# 62             f4a_floor  0.797110729
+# 63           f3_drh_hosp  0.780560181
+# 64     f4a_hometrt_othr1  0.777065418
+# 65     f4a_drh_lessdrink  0.768551840
+# 66       f4a_wash_animal  0.763417432
+# 67      f4a_cur_restless  0.756106458
+# 68             f4b_admit  0.755191514
+# 69       f4a_hometrt_ors  0.750609150
+# 70        f4a_house_bike  0.746063126
+# 71      f4b_nature_stool  0.732508004
+# 72       f4a_house_phone  0.718851080
+# 73    f4a_cur_fastbreath  0.697953319
+# 74         f4a_share_fac  0.679283798
+# 75      f4a_house_agland  0.664772338
+# 76      f4a_hometrt_herb  0.650032089
+# 77            f4b_mental  0.635317137
+# 78          f4b_abn_hair  0.618697034
+# 79          f4a_ani_fowl  0.617535347
+# 80        f4a_disp_feces  0.583960620
+# 81              f4b_eyes  0.572106285
+# 82        f4a_water_yard  0.570137875
+# 83       f4b_chest_indrw  0.536275815
+# 84       f4a_house_radio  0.493069658
+# 85        f4a_drh_strain  0.489715504
+# 86         f4a_fac_waste  0.473353546
+# 87          f4a_wash_eat  0.444587028
+# 88        f4a_seek_other  0.407519178
+# 89        f4a_hometrt_ab  0.366109032
+# 90         f4a_wash_othr  0.305757249
+# 91   f4a_hometrt_othrliq  0.275067709
+# 92      f4a_relationship  0.234260246
+# 93          f4a_seek_doc  0.205065786
+# 94     f4a_water_covwell  0.200641211
+# 95       f4a_seek_healer  0.196467386
+# 96     f4a_hometrt_othr2  0.194909387
+# 97    f4a_water_covpwell  0.194743019
+# 98        f4a_seek_remdy  0.177957858
+# 99      f4a_seek_privdoc  0.166536455
+# 100       f4b_skin_flaky  0.160681461
+# 101        f4a_drh_consc  0.145354185
+# 102    f4a_fuel_charcoal  0.130420215
+# 103           f4a_ani_no  0.088537234
+# 104        f4a_fuel_wood  0.085442160
+# 105      f4a_seek_friend  0.071820772
+# 106       f4a_water_bore  0.058252995
+# 107     f4a_drh_prolapse  0.050895979
+# 108     f4a_hometrt_milk  0.044651932
+# 109          f4b_bipedal  0.041454381
+# 110       f4a_water_othr  0.040484175
+# 111      f4a_water_house  0.034829298
+# 112         f4a_drh_conv  0.030242492
+# 113           f4b_rectal  0.016947289
+# 114       f4a_water_rain  0.012509042
+# 115  f4a_water_shallwell  0.011434888
+# 116      f4a_fuel_natgas  0.006712751
+# 117        f4a_fuel_coal  0.003877631
+# 118     f4a_hometrt_zinc  0.003478963
+# 119                 site  0.000000000
+# 120       f4a_house_boat  0.000000000
+# 121       f4a_house_none  0.000000000
+# 122        f4a_fuel_elec  0.000000000
+# 123      f4a_fuel_biogas  0.000000000
+# 124       f4a_fuel_grass  0.000000000
+# 125     f4a_fuel_propane  0.000000000
+# 126        f4a_fuel_dung  0.000000000
+# 127        f4a_fuel_crop  0.000000000
+# 128        f4a_fuel_kero  0.000000000
+# 129       f4a_fuel_other  0.000000000
+# 130  f4a_water_prospring  0.000000000
+# 131   f4a_water_unspring  0.000000000
+# 132      f4a_water_river  0.000000000
+# 133       f4a_water_pond  0.000000000
+# 134     f4a_water_bought  0.000000000
+# 135    f4b_observe_stool  0.000000000
+
+# AUC          SE     lower     upper level Model nvar
+# 1 0.6656235 0.004433991 0.6569331 0.6743140  0.95    LR    5
+# 2 0.6871235 0.004423330 0.6784540 0.6957931  0.95    LR   10
+# 3 0.6548910 0.004517594 0.6460367 0.6637453  0.95    RF    5
+# 4 0.6681199 0.004516757 0.6592672 0.6769726  0.95    RF   10
+
+# nvar   intc intc_LCI intc_UCI slope slope_LCI slope_UCI
+# <dbl>  <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
+#   1     5 0.0128   -0.349    0.362 0.984     0.447      1.58
+# 2    10 0.0109   -0.357    0.366 0.771     0.349      1.26
+
+################### by country growth falter - Mali ####
+summary(cases_gf_Mali$f4a_prim_schl)
+cases_gf_Mali_complete <- cases_gf_Mali %>% filter(f4a_prim_schl!=7) 
+summary(cases_gf_Mali_complete$f4a_prim_schl)
+
+GF.Mali <- CPR.funct(data=cases_gf_Mali_complete,outcome="haz_0.5",iter=100,nvars_opts=c(5,10))
+GF.Mali[["df_imps"]]
+GF.Mali[["AUC_df"]]
+GF.Mali[["calib"]]
+
+# names      var_red
+# 1               base_age 21.955331133
+# 2                f4b_haz 13.408203498
+# 3               f4b_resp  9.575536458
+# 4               f4b_temp  9.162323342
+# 5          f4a_breastfed  8.564195567
+# 6          f4a_ppl_house  7.212269971
+# 7          f4a_slp_rooms  5.333295977
+# 8       f4a_yng_children  4.538280482
+# 9          f4a_share_fac  4.115750672
+# 10          f4a_drh_days  4.045664111
+# 11         f4a_prim_schl  3.379810689
+# 12         f4a_drh_vomit  2.402840529
+# 13       f4a_store_water  2.359871288
+# 14     f4a_drh_bellypain  2.113636963
+# 15          f4a_dad_live  1.949838396
+# 16     f4a_water_covwell  1.921455626
+# 17              f4b_skin  1.818330723
+# 18        f4a_max_stools  1.806932755
+# 19        f4a_offr_drink  1.806244995
+# 20    f4a_drh_cough_miss  1.715072857
+# 21            f4b_mental  1.637536075
+# 22      f4a_cur_restless  1.589634388
+# 23       f4a_water_avail  1.575407016
+# 24          f4a_wash_def  1.525300417
+# 25             f3_gender  1.471320469
+# 26         f4a_wash_cook  1.458691783
+# 27        f4a_house_bike  1.449628848
+# 28             f4b_mouth  1.442838122
+# 29          f4a_ani_fowl  1.411344748
+# 30      f4a_cur_drymouth  1.372378503
+# 31      f4a_drh_restless  1.367588658
+# 32       f4a_hometrt_ors  1.366786985
+# 33          f4a_ms_water  1.345129593
+# 34  f4a_drh_lethrgy_miss  1.329644163
+# 35       f4a_house_scoot  1.324061177
+# 36         f4a_fuel_wood  1.320419350
+# 37          f4a_cur_skin  1.289710277
+# 38        f4a_wash_nurse  1.285020765
+# 39      f4a_hometrt_none  1.283303131
+# 40       f4a_ani_rodents  1.270773473
+# 41         f3_drh_turgor  1.266210812
+# 42     f4a_fuel_charcoal  1.256434273
+# 43      f4a_seek_outside  1.252898514
+# 44        f4a_wash_child  1.247528745
+# 45     f4a_hometrt_maize  1.229203470
+# 46          f4a_wash_use  1.223922016
+# 47      f4a_hometrt_herb  1.202388288
+# 48       f4a_seek_healer  1.191989662
+# 49      f4a_house_fridge  1.151755474
+# 50        f4a_house_tele  1.135781743
+# 51        f4a_house_elec  1.127480798
+# 52    f4a_water_covpwell  1.110235275
+# 53        f4b_under_nutr  1.077216066
+# 54         f4a_house_car  1.062083824
+# 55       f4a_cur_thirsty  1.039569817
+# 56        f4a_drh_strain  1.034485986
+# 57         f4a_ani_sheep  1.007190017
+# 58      f4a_water_pubtap  0.983046076
+# 59            f4a_ani_no  0.977103542
+# 60       f4a_house_radio  0.976888350
+# 61      f4a_water_bought  0.955363045
+# 62        f4a_drh_thirst  0.930816703
+# 63     f4a_hometrt_othr1  0.926638718
+# 64          f4a_wash_eat  0.905489184
+# 65        f4a_hometrt_ab  0.902915874
+# 66        f4a_seek_pharm  0.887605173
+# 67        f4a_disp_feces  0.869835297
+# 68         f4b_recommend  0.851295834
+# 69         f4a_drh_blood  0.819787144
+# 70        f4a_house_cart  0.806123177
+# 71             f3_drh_iv  0.795327216
+# 72   f4a_water_prospring  0.753821849
+# 73           f4a_ani_dog  0.738827851
+# 74     f4a_drh_lessdrink  0.684786924
+# 75           f4a_ani_cat  0.656693471
+# 76    f4a_cur_fastbreath  0.654166809
+# 77        f4a_seek_remdy  0.614176351
+# 78        f4a_fuel_other  0.602931990
+# 79        f4a_water_yard  0.598783769
+# 80      f4a_relationship  0.579227169
+# 81     f4a_hometrt_othr2  0.551398491
+# 82     f4a_water_pubwell  0.541319372
+# 83       f4a_house_phone  0.434983163
+# 84      f4b_nature_stool  0.426834581
+# 85         f4a_fac_waste  0.383646013
+# 86        f4a_water_well  0.378051001
+# 87      f4a_seek_privdoc  0.376323459
+# 88          f4b_abn_hair  0.366225883
+# 89       f4a_water_house  0.330370202
+# 90      f4a_fuel_propane  0.326236121
+# 91           f4b_bipedal  0.311773834
+# 92          f4a_ani_goat  0.310980077
+# 93       f4b_chest_indrw  0.296441191
+# 94           f3_drh_hosp  0.292313156
+# 95       f4a_wash_animal  0.275392897
+# 96             f4a_floor  0.273340735
+# 97             f4b_admit  0.262957683
+# 98      f4a_house_agland  0.252814173
+# 99        f4a_seek_other  0.252062862
+# 100          f4a_ani_cow  0.250923644
+# 101        f4a_ani_other  0.250036622
+# 102  f4a_hometrt_othrliq  0.171210452
+# 103             f4b_eyes  0.145756423
+# 104       f4a_water_bore  0.135656176
+# 105        f4a_fuel_elec  0.122150222
+# 106        f4a_trt_water  0.122016285
+# 107       f4a_trt_method  0.121421449
+# 108         f4a_drh_conv  0.121219705
+# 109      f4a_fuel_biogas  0.117624353
+# 110     f4a_hometrt_milk  0.107915820
+# 111       f4a_house_boat  0.103552835
+# 112   f4a_water_deepwell  0.103363919
+# 113      f4a_fuel_natgas  0.102139808
+# 114        f4a_wash_othr  0.101447499
+# 115       f4b_skin_flaky  0.097600244
+# 116      f4a_seek_friend  0.069374791
+# 117         f4a_seek_doc  0.056292530
+# 118        f4a_drh_consc  0.014158349
+# 119     f4a_drh_prolapse  0.011210369
+# 120     f4a_hometrt_zinc  0.009055965
+# 121        f4a_fuel_coal  0.007985773
+# 122        f4a_fuel_crop  0.006677094
+# 123           f4b_rectal  0.003828110
+# 124       f4a_house_none  0.002009524
+# 125                 site  0.000000000
+# 126       f4a_fuel_grass  0.000000000
+# 127        f4a_fuel_dung  0.000000000
+# 128        f4a_fuel_kero  0.000000000
+# 129   f4a_water_unspring  0.000000000
+# 130      f4a_water_river  0.000000000
+# 131       f4a_water_pond  0.000000000
+# 132       f4a_water_rain  0.000000000
+# 133  f4a_water_shallwell  0.000000000
+# 134       f4a_water_othr  0.000000000
+# 135    f4b_observe_stool  0.000000000
+
+# AUC          SE     lower     upper level Model nvar
+# 1 0.8237806 0.002596168 0.8186922 0.8288690  0.95    LR    5
+# 2 0.8190074 0.002622275 0.8138679 0.8241470  0.95    LR   10
+# 3 0.7877022 0.002897924 0.7820224 0.7933821  0.95    RF    5
+# 4 0.8019593 0.002812039 0.7964478 0.8074708  0.95    RF   10
+
+# nvar    intc intc_LCI intc_UCI slope slope_LCI slope_UCI
+# <dbl>   <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
+#   1     5 -0.0360   -0.379    0.289 1.00      0.689      1.37
+# 2    10 -0.0381   -0.381    0.288 0.958     0.657      1.31
+
+################### by country growth falter - Mozam - abandoned, too small sample size####
+
+
+################### by country growth falter - Kenya ####
+summary(cases_gf_Kenya$f4a_prim_schl)
+cases_gf_Kenya_complete <- cases_gf_Kenya %>% filter(f4a_prim_schl!=7) 
+cases_gf_Kenya_complete$f4a_prim_schl <- as.factor(ifelse(cases_gf_Kenya_complete$f4a_prim_schl==5,4,cases_gf_Kenya_complete$f4a_prim_schl))
+summary(cases_gf_Kenya_complete$f4a_prim_schl)
+
+GF.Kenya <- CPR.funct(data=cases_gf_Kenya_complete,outcome="haz_0.5",iter=100,nvars_opts=c(5,10))
+GF.Kenya[["df_imps"]]
+GF.Kenya[["AUC_df"]]
+GF.Kenya[["calib"]]
+
+# names      var_red
+# 1               base_age 1.507445e+01
+# 2                f4b_haz 1.245626e+01
+# 3               f4b_resp 9.105176e+00
+# 4               f4b_temp 8.116625e+00
+# 5          f4a_breastfed 5.295267e+00
+# 6           f4a_drh_days 4.962560e+00
+# 7          f4a_ppl_house 4.749089e+00
+# 8          f4a_share_fac 4.415257e+00
+# 9         f4a_offr_drink 4.059327e+00
+# 10      f4a_yng_children 2.517742e+00
+# 11            f4b_mental 2.352309e+00
+# 12          f4a_cur_skin 2.327227e+00
+# 13          f4a_dad_live 2.172088e+00
+# 14        f4a_disp_feces 2.146271e+00
+# 15        f4a_trt_method 2.133811e+00
+# 16          f4a_ms_water 1.992381e+00
+# 17         f4a_prim_schl 1.953535e+00
+# 18         f4a_slp_rooms 1.842010e+00
+# 19       f4a_cur_thirsty 1.803163e+00
+# 20        f4a_max_stools 1.710469e+00
+# 21     f4a_drh_lessdrink 1.691265e+00
+# 22     f4a_drh_bellypain 1.674480e+00
+# 23     f4a_hometrt_othr1 1.633697e+00
+# 24           f4a_ani_cat 1.619497e+00
+# 25             f3_gender 1.565019e+00
+# 26             f4b_mouth 1.558896e+00
+# 27       f4a_ani_rodents 1.547404e+00
+# 28              f4b_skin 1.531958e+00
+# 29        f4a_house_bike 1.517214e+00
+# 30  f4a_drh_lethrgy_miss 1.516807e+00
+# 31        f4a_wash_nurse 1.516747e+00
+# 32         f4a_wash_othr 1.494647e+00
+# 33       f4a_house_phone 1.472162e+00
+# 34         f4a_drh_vomit 1.461701e+00
+# 35      f4a_cur_restless 1.439931e+00
+# 36       f4a_hometrt_ors 1.431505e+00
+# 37    f4a_drh_cough_miss 1.429850e+00
+# 38         f4a_wash_cook 1.422958e+00
+# 39           f4a_ani_dog 1.422917e+00
+# 40          f4a_ani_goat 1.421825e+00
+# 41          f4a_wash_def 1.415765e+00
+# 42         f4a_ani_sheep 1.411597e+00
+# 43     f4a_hometrt_maize 1.408561e+00
+# 44     f4a_fuel_charcoal 1.397749e+00
+# 45        f4a_drh_thirst 1.387786e+00
+# 46        f4a_water_rain 1.371729e+00
+# 47           f4a_ani_cow 1.361894e+00
+# 48        f4a_wash_child 1.341028e+00
+# 49       f4a_water_river 1.319418e+00
+# 50       f4a_house_radio 1.303273e+00
+# 51      f4a_cur_drymouth 1.301293e+00
+# 52         f3_drh_turgor 1.295659e+00
+# 53      f4a_drh_restless 1.269770e+00
+# 54         f4a_drh_consc 1.267550e+00
+# 55    f4a_cur_fastbreath 1.260611e+00
+# 56       f4a_fuel_biogas 1.240118e+00
+# 57      f4a_seek_outside 1.203260e+00
+# 58          f4a_wash_eat 1.189176e+00
+# 59      f4a_hometrt_none 1.186014e+00
+# 60         f4a_trt_water 1.172283e+00
+# 61        f4a_water_bore 1.144911e+00
+# 62        f4a_drh_strain 1.128020e+00
+# 63         f4a_drh_blood 1.100098e+00
+# 64           f3_drh_hosp 1.084261e+00
+# 65        f4b_under_nutr 1.060566e+00
+# 66             f4a_floor 1.025278e+00
+# 67      f4a_hometrt_herb 9.995912e-01
+# 68             f3_drh_iv 9.952964e-01
+# 69        f4a_water_pond 9.641911e-01
+# 70       f4a_water_avail 9.492973e-01
+# 71        f4a_seek_pharm 9.226264e-01
+# 72       f4a_store_water 9.092826e-01
+# 73          f4a_ani_fowl 8.936630e-01
+# 74        f4a_house_tele 8.895841e-01
+# 75   f4a_water_prospring 8.866799e-01
+# 76         f4a_fuel_kero 8.427637e-01
+# 77         f4a_fuel_wood 8.353187e-01
+# 78         f4a_ani_other 8.326739e-01
+# 79         f4a_fac_waste 7.775633e-01
+# 80      f4a_water_pubtap 7.770680e-01
+# 81             f4b_admit 7.060110e-01
+# 82      f4a_house_agland 7.044261e-01
+# 83       f4a_wash_animal 6.972339e-01
+# 84     f4a_water_pubwell 6.833829e-01
+# 85          f4a_wash_use 6.735692e-01
+# 86         f4a_fuel_crop 6.425324e-01
+# 87        f4a_hometrt_ab 6.355166e-01
+# 88          f4b_abn_hair 5.867222e-01
+# 89         f4b_recommend 5.863623e-01
+# 90   f4a_water_shallwell 5.667533e-01
+# 91    f4a_water_unspring 5.398711e-01
+# 92        f4a_house_cart 5.374587e-01
+# 93     f4a_hometrt_othr2 4.580684e-01
+# 94       f4a_seek_healer 4.573787e-01
+# 95          f4a_drh_conv 4.483166e-01
+# 96        f4a_seek_remdy 4.254185e-01
+# 97           f4b_bipedal 4.089412e-01
+# 98      f4b_nature_stool 4.025859e-01
+# 99    f4a_water_deepwell 3.867288e-01
+# 100     f4a_relationship 3.800404e-01
+# 101       f4a_fuel_grass 3.526139e-01
+# 102      f4b_chest_indrw 3.270070e-01
+# 103       f4b_skin_flaky 3.135690e-01
+# 104     f4a_hometrt_milk 3.093536e-01
+# 105       f4a_house_elec 2.865720e-01
+# 106      f4a_house_scoot 2.576278e-01
+# 107     f4a_hometrt_zinc 2.415556e-01
+# 108       f4a_seek_other 2.337110e-01
+# 109       f4a_water_well 1.995315e-01
+# 110         f4a_seek_doc 1.940173e-01
+# 111     f4a_drh_prolapse 1.859601e-01
+# 112             f4b_eyes 1.822140e-01
+# 113       f4a_house_none 1.614337e-01
+# 114  f4a_hometrt_othrliq 1.582354e-01
+# 115        f4a_house_car 1.474972e-01
+# 116      f4a_seek_friend 1.438885e-01
+# 117           f4a_ani_no 1.085679e-01
+# 118        f4a_fuel_coal 1.056125e-01
+# 119      f4a_fuel_natgas 1.030635e-01
+# 120           f4b_rectal 1.023864e-01
+# 121   f4a_water_covpwell 9.412337e-02
+# 122    f4a_water_covwell 8.521324e-02
+# 123     f4a_fuel_propane 5.928542e-02
+# 124     f4a_house_fridge 5.430299e-02
+# 125     f4a_seek_privdoc 3.746243e-02
+# 126        f4a_fuel_dung 2.328004e-02
+# 127       f4a_water_yard 1.124528e-02
+# 128     f4a_water_bought 1.093947e-02
+# 129       f4a_fuel_other 7.671561e-03
+# 130        f4a_fuel_elec 7.915950e-04
+# 131      f4a_water_house 5.142857e-04
+# 132                 site 0.000000e+00
+# 133       f4a_house_boat 0.000000e+00
+# 134       f4a_water_othr 0.000000e+00
+# 135    f4b_observe_stool 0.000000e+00
+
+# AUC          SE     lower     upper level Model nvar
+# 1 0.7080055 0.003658155 0.7008356 0.7151753  0.95    LR    5
+# 2 0.7168951 0.003641203 0.7097585 0.7240317  0.95    LR   10
+# 3 0.6906276 0.003779725 0.6832195 0.6980357  0.95    RF    5
+# 4 0.7062554 0.003668601 0.6990650 0.7134457  0.95    RF   10
+
+# nvar     intc intc_LCI intc_UCI slope slope_LCI slope_UCI
+# <dbl>    <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
+#   1     5 0.00196    -0.326    0.319 0.994     0.579      1.47
+# 2    10 0.000204   -0.332    0.322 0.894     0.529      1.31
+
+
+################### by country growth falter - India ####
+GF.India <- CPR.funct(data=cases_gf_India,outcome="haz_0.5",iter=100,nvars_opts=c(5,10))
+GF.India[["df_imps"]]
+GF.India[["AUC_df"]]
+GF.India[["calib"]]
+
+# names      var_red
+# 1                f4b_haz 1.521073e+01
+# 2               base_age 1.504872e+01
+# 3               f4b_temp 9.329257e+00
+# 4               f4b_resp 8.620198e+00
+# 5          f4a_share_fac 7.067005e+00
+# 6          f4a_ppl_house 5.873352e+00
+# 7           f4a_drh_days 4.201690e+00
+# 8          f4a_prim_schl 4.112901e+00
+# 9          f4a_slp_rooms 3.420494e+00
+# 10        f4a_offr_drink 3.156171e+00
+# 11        f4a_disp_feces 2.851584e+00
+# 12     f4a_drh_bellypain 2.597336e+00
+# 13      f4a_yng_children 2.477022e+00
+# 14       f4a_store_water 2.403966e+00
+# 15            f4b_mental 2.365120e+00
+# 16         f4a_breastfed 2.355949e+00
+# 17        f4a_max_stools 2.300619e+00
+# 18         f4b_recommend 2.129528e+00
+# 19         f4a_fac_waste 1.997613e+00
+# 20        f4a_wash_nurse 1.873292e+00
+# 21             f4b_admit 1.863156e+00
+# 22           f3_drh_hosp 1.784268e+00
+# 23        f4a_drh_thirst 1.761857e+00
+# 24        f4a_trt_method 1.757213e+00
+# 25     f4a_drh_lessdrink 1.754423e+00
+# 26          f4a_wash_use 1.740666e+00
+# 27          f4a_ms_water 1.734895e+00
+# 28             f3_gender 1.720478e+00
+# 29       f4a_cur_thirsty 1.713658e+00
+# 30         f4a_fuel_wood 1.676659e+00
+# 31         f4a_trt_water 1.624051e+00
+# 32          f4a_wash_eat 1.598030e+00
+# 33         f4a_fuel_coal 1.591337e+00
+# 34        f4a_wash_child 1.587046e+00
+# 35          f4a_ani_fowl 1.569543e+00
+# 36         f4a_drh_vomit 1.548184e+00
+# 37         f4a_fuel_kero 1.531109e+00
+# 38       f4a_house_phone 1.494213e+00
+# 39        f4a_house_bike 1.493888e+00
+# 40      f4a_seek_outside 1.477646e+00
+# 41    f4a_drh_cough_miss 1.469349e+00
+# 42       f4a_hometrt_ors 1.457092e+00
+# 43           f4a_ani_dog 1.437626e+00
+# 44  f4a_drh_lethrgy_miss 1.417704e+00
+# 45         f4a_wash_cook 1.413458e+00
+# 46          f4a_wash_def 1.405248e+00
+# 47      f4a_fuel_propane 1.329878e+00
+# 48           f4a_ani_cat 1.325169e+00
+# 49       f4a_house_radio 1.323808e+00
+# 50        f4a_house_tele 1.321220e+00
+# 51      f4a_drh_restless 1.288186e+00
+# 52        f4a_water_yard 1.278417e+00
+# 53             f4b_mouth 1.271464e+00
+# 54        f4a_house_elec 1.267081e+00
+# 55      f4a_water_pubtap 1.264919e+00
+# 56     f4a_hometrt_maize 1.247431e+00
+# 57      f4a_hometrt_none 1.218870e+00
+# 58      f4a_cur_restless 1.187947e+00
+# 59          f4a_cur_skin 1.181253e+00
+# 60             f4a_floor 1.144962e+00
+# 61      f4a_seek_privdoc 1.107743e+00
+# 62              f4b_skin 1.013737e+00
+# 63         f3_drh_turgor 9.803479e-01
+# 64         f4a_ani_other 9.502382e-01
+# 65          f4a_ani_goat 9.410543e-01
+# 66        f4a_hometrt_ab 9.241972e-01
+# 67     f4a_hometrt_othr1 9.216239e-01
+# 68              f4b_eyes 8.444873e-01
+# 69       f4a_house_scoot 8.229946e-01
+# 70      f4a_house_fridge 8.183037e-01
+# 71      f4a_cur_drymouth 8.082448e-01
+# 72             f3_drh_iv 8.060254e-01
+# 73         f4a_drh_blood 8.024697e-01
+# 74    f4a_cur_fastbreath 7.885411e-01
+# 75        f4a_seek_other 7.431479e-01
+# 76          f4a_seek_doc 6.727085e-01
+# 77     f4a_hometrt_othr2 6.493747e-01
+# 78      f4b_nature_stool 6.480466e-01
+# 79        f4b_under_nutr 6.378190e-01
+# 80        f4a_seek_pharm 6.276165e-01
+# 81        f4a_drh_strain 6.149805e-01
+# 82          f4a_dad_live 6.139282e-01
+# 83        f4a_house_none 5.691069e-01
+# 84       f4a_ani_rodents 5.045493e-01
+# 85    f4a_water_deepwell 4.987316e-01
+# 86       f4a_fuel_natgas 4.382491e-01
+# 87         f4a_house_car 4.234732e-01
+# 88        f4a_water_othr 4.150893e-01
+# 89     f4a_fuel_charcoal 3.936707e-01
+# 90       f4a_water_avail 3.909248e-01
+# 91       f4a_water_house 3.687936e-01
+# 92       f4a_wash_animal 3.571452e-01
+# 93           f4a_ani_cow 3.294792e-01
+# 94         f4a_fuel_dung 2.790447e-01
+# 95   f4a_hometrt_othrliq 2.788285e-01
+# 96     f4b_observe_stool 2.469088e-01
+# 97      f4a_relationship 2.459320e-01
+# 98   f4a_water_shallwell 2.392190e-01
+# 99         f4a_wash_othr 2.052254e-01
+# 100        f4a_fuel_elec 1.480428e-01
+# 101         f4b_abn_hair 1.446651e-01
+# 102        f4a_ani_sheep 1.360242e-01
+# 103       f4a_seek_remdy 1.343827e-01
+# 104     f4a_hometrt_zinc 1.343514e-01
+# 105     f4a_hometrt_herb 8.224079e-02
+# 106      f4a_seek_friend 7.467944e-02
+# 107           f4a_ani_no 7.444196e-02
+# 108     f4a_hometrt_milk 4.857174e-02
+# 109     f4a_house_agland 4.543482e-02
+# 110      f4b_chest_indrw 2.287050e-02
+# 111        f4a_drh_consc 1.469187e-02
+# 112         f4a_drh_conv 1.005509e-02
+# 113           f4b_rectal 8.358881e-03
+# 114       f4b_skin_flaky 6.476286e-03
+# 115     f4a_drh_prolapse 5.589976e-03
+# 116          f4b_bipedal 4.305556e-03
+# 117       f4a_water_well 4.026741e-03
+# 118     f4a_water_bought 3.203385e-03
+# 119       f4a_fuel_grass 9.008586e-04
+# 120                 site 0.000000e+00
+# 121       f4a_house_cart 0.000000e+00
+# 122       f4a_house_boat 0.000000e+00
+# 123      f4a_fuel_biogas 0.000000e+00
+# 124        f4a_fuel_crop 0.000000e+00
+# 125       f4a_fuel_other 0.000000e+00
+# 126    f4a_water_covwell 0.000000e+00
+# 127   f4a_water_covpwell 0.000000e+00
+# 128  f4a_water_prospring 0.000000e+00
+# 129   f4a_water_unspring 0.000000e+00
+# 130    f4a_water_pubwell 0.000000e+00
+# 131      f4a_water_river 0.000000e+00
+# 132       f4a_water_pond 0.000000e+00
+# 133       f4a_water_rain 0.000000e+00
+# 134       f4a_water_bore 0.000000e+00
+# 135      f4a_seek_healer 0.000000e+00
+
+# AUC          SE     lower     upper level Model nvar
+# 1 0.7551037 0.003409296 0.7484216 0.7617858  0.95    LR    5
+# 2 0.7714008 0.003307398 0.7649185 0.7778832  0.95    LR   10
+# 3 0.7354566 0.003566921 0.7284656 0.7424477  0.95    RF    5
+# 4 0.7607934 0.003383891 0.7541610 0.7674257  0.95    RF   10
+
+# nvar    intc intc_LCI intc_UCI slope slope_LCI slope_UCI
+# <dbl>   <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
+#   1     5 -0.0163   -0.346    0.297 0.965     0.621      1.35
+# 2    10 -0.0135   -0.352    0.308 0.884     0.582      1.23
+
+################### by country growth falter - Bang ####
+summary(cases_gf_Bang$f4a_fac_waste)
+cases_gf_Bang_complete <- cases_gf_Bang
+cases_gf_Bang_complete$f4a_fac_waste <- as.factor(ifelse(cases_gf_Bang_complete$f4a_fac_waste==1,6,cases_gf_Bang_complete$f4a_fac_waste))
+summary(cases_gf_Bang_complete$f4a_fac_waste)
+
+GF.Bang <- CPR.funct(data=cases_gf_Bang_complete,outcome="haz_0.5",iter=100,nvars_opts=c(5,10))
+GF.Bang[["df_imps"]]
+GF.Bang[["AUC_df"]]
+GF.Bang[["calib"]]
+
+# names      var_red
+# 1               base_age 15.992211997
+# 2                f4b_haz 15.455265839
+# 3               f4b_resp 10.417970594
+# 4               f4b_temp  9.927338211
+# 5          f4a_ppl_house  7.027169264
+# 6           f4a_drh_days  5.434688195
+# 7          f4a_fac_waste  4.711101874
+# 8          f4a_slp_rooms  4.701627255
+# 9          f4a_share_fac  4.371175198
+# 10         f4a_prim_schl  3.505505882
+# 11        f4a_max_stools  2.893332334
+# 12          f4a_dad_live  2.719018338
+# 13      f4a_yng_children  2.538019270
+# 14        f4a_disp_feces  2.488647357
+# 15        f4a_offr_drink  2.138582252
+# 16          f4a_wash_use  2.111029667
+# 17         f4b_recommend  2.093926832
+# 18             f3_gender  1.962319399
+# 19        f4a_wash_child  1.955525838
+# 20         f4a_wash_cook  1.950384079
+# 21        f4a_wash_nurse  1.924674846
+# 22          f4a_ani_fowl  1.852258304
+# 23           f4a_ani_cow  1.833130567
+# 24         f4a_breastfed  1.823930761
+# 25       f4a_wash_animal  1.791537018
+# 26        f4a_house_elec  1.790629394
+# 27        f4a_hometrt_ab  1.761546238
+# 28      f4a_drh_restless  1.746548967
+# 29         f4a_drh_vomit  1.742260745
+# 30         f4a_fuel_dung  1.738637794
+# 31       f4a_house_radio  1.732888728
+# 32      f4b_nature_stool  1.731673642
+# 33   f4a_water_shallwell  1.731432359
+# 34        f4a_house_tele  1.718576971
+# 35     f4a_drh_bellypain  1.687180778
+# 36        f4a_house_bike  1.678059056
+# 37    f4a_drh_cough_miss  1.670595591
+# 38    f4a_water_deepwell  1.660793875
+# 39         f4a_fuel_crop  1.648096991
+# 40        f4a_seek_pharm  1.637227292
+# 41         f4a_drh_blood  1.584206826
+# 42       f4a_hometrt_ors  1.577001237
+# 43             f4b_admit  1.551080113
+# 44        f4a_drh_strain  1.549353411
+# 45       f4a_cur_thirsty  1.548480258
+# 46           f3_drh_hosp  1.531459476
+# 47      f4a_cur_drymouth  1.516467728
+# 48       f4a_house_phone  1.510175764
+# 49  f4a_drh_lethrgy_miss  1.508095242
+# 50          f4a_wash_def  1.496999370
+# 51      f4a_house_agland  1.489696877
+# 52      f4a_cur_restless  1.480930094
+# 53        f4a_fuel_grass  1.466623967
+# 54         f4a_wash_othr  1.454377707
+# 55          f4a_wash_eat  1.448042656
+# 56      f4a_hometrt_none  1.434816813
+# 57         f4a_fuel_wood  1.431227707
+# 58           f4a_ani_dog  1.406762054
+# 59       f4a_ani_rodents  1.375417698
+# 60      f4a_seek_outside  1.366602701
+# 61        f4a_seek_remdy  1.345468278
+# 62        f4a_drh_thirst  1.315718838
+# 63             f4a_floor  1.250969044
+# 64     f4a_hometrt_othr1  1.212436775
+# 65     f4a_hometrt_othr2  1.180862153
+# 66           f4a_ani_cat  1.156374746
+# 67      f4a_hometrt_zinc  1.152232112
+# 68          f4a_cur_skin  1.117868441
+# 69          f4a_ani_goat  1.020014927
+# 70          f4a_seek_doc  1.002018117
+# 71              f4b_eyes  0.974981392
+# 72            f4b_mental  0.947357513
+# 73             f3_drh_iv  0.885386427
+# 74        f4a_house_none  0.781154500
+# 75       f4a_house_scoot  0.738342849
+# 76         f4a_ani_sheep  0.737210771
+# 77      f4a_house_fridge  0.706603957
+# 78          f4a_drh_conv  0.636100969
+# 79        f4a_trt_method  0.590455474
+# 80      f4a_drh_prolapse  0.584047755
+# 81            f4a_ani_no  0.522625739
+# 82         f4a_trt_water  0.509555072
+# 83         f3_drh_turgor  0.490030064
+# 84       f4a_fuel_natgas  0.469329239
+# 85        f4b_under_nutr  0.437232347
+# 86    f4a_cur_fastbreath  0.435410887
+# 87              f4b_skin  0.394641348
+# 88        f4a_house_cart  0.383408453
+# 89             f4b_mouth  0.358175440
+# 90      f4a_hometrt_herb  0.343583628
+# 91        f4a_house_boat  0.332705985
+# 92     f4a_drh_lessdrink  0.320411080
+# 93         f4a_drh_consc  0.318961118
+# 94      f4a_fuel_propane  0.274776385
+# 95     f4a_hometrt_maize  0.259525937
+# 96         f4a_house_car  0.235459178
+# 97       f4a_seek_healer  0.234802980
+# 98      f4a_seek_privdoc  0.229832983
+# 99     f4a_water_covwell  0.228528803
+# 100      f4b_chest_indrw  0.210565077
+# 101       f4a_water_well  0.165708834
+# 102         f4a_ms_water  0.159096424
+# 103    f4a_fuel_charcoal  0.139392926
+# 104      f4a_water_house  0.110308276
+# 105       f4a_fuel_other  0.092426599
+# 106          f4b_bipedal  0.087102852
+# 107     f4a_relationship  0.021910565
+# 108      f4a_store_water  0.019517809
+# 109           f4b_rectal  0.016624236
+# 110      f4a_seek_friend  0.012850846
+# 111        f4a_fuel_elec  0.012231162
+# 112  f4a_hometrt_othrliq  0.009629447
+# 113        f4a_fuel_kero  0.007805464
+# 114      f4a_water_avail  0.007553802
+# 115    f4a_water_pubwell  0.003715285
+# 116        f4a_ani_other  0.001087912
+# 117                 site  0.000000000
+# 118      f4a_fuel_biogas  0.000000000
+# 119        f4a_fuel_coal  0.000000000
+# 120       f4a_water_yard  0.000000000
+# 121   f4a_water_covpwell  0.000000000
+# 122     f4a_water_pubtap  0.000000000
+# 123  f4a_water_prospring  0.000000000
+# 124   f4a_water_unspring  0.000000000
+# 125      f4a_water_river  0.000000000
+# 126       f4a_water_pond  0.000000000
+# 127       f4a_water_rain  0.000000000
+# 128     f4a_water_bought  0.000000000
+# 129       f4a_water_othr  0.000000000
+# 130       f4a_water_bore  0.000000000
+# 131     f4a_hometrt_milk  0.000000000
+# 132       f4a_seek_other  0.000000000
+# 133         f4b_abn_hair  0.000000000
+# 134       f4b_skin_flaky  0.000000000
+# 135    f4b_observe_stool  0.000000000
+
+# AUC          SE     lower     upper level Model nvar
+# 1 0.7121055 0.003543283 0.7051608 0.7190502  0.95    LR    5
+# 2 0.7035398 0.003534854 0.6966116 0.7104680  0.95    LR   10
+# 3 0.6831493 0.003620424 0.6760534 0.6902452  0.95    RF    5
+# 4 0.6916552 0.003621528 0.6845572 0.6987533  0.95    RF   10
+
+# nvar    intc intc_LCI intc_UCI slope slope_LCI slope_UCI
+# <dbl>   <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
+#   1     5 -0.0395   -0.353    0.261 1.00      0.602      1.45
+# 2    10 -0.0380   -0.354    0.265 0.805     0.453      1.19
+
+################### by country growth falter - Pak ####
+GF.Pak <- CPR.funct(data=cases_gf_Pak,outcome="haz_0.5",iter=100,nvars_opts=c(5,10))
+GF.Pak[["df_imps"]]
+GF.Pak[["AUC_df"]]
+GF.Pak[["calib"]]
+
+# names      var_red
+# 1               base_age 1.063968e+01
+# 2                f4b_haz 9.030872e+00
+# 3               f4b_temp 7.157936e+00
+# 4               f4b_resp 6.895398e+00
+# 5          f4a_ppl_house 5.310283e+00
+# 6           f4a_drh_days 3.415322e+00
+# 7       f4a_yng_children 3.017623e+00
+# 8          f4a_slp_rooms 2.929742e+00
+# 9          f4a_prim_schl 2.779773e+00
+# 10             f3_drh_iv 2.362648e+00
+# 11         f4b_recommend 2.168605e+00
+# 12         f4a_share_fac 2.162022e+00
+# 13        f4a_offr_drink 2.141527e+00
+# 14         f4a_breastfed 2.007453e+00
+# 15        f4a_trt_method 1.964544e+00
+# 16        f4a_max_stools 1.894542e+00
+# 17       f4a_water_avail 1.878792e+00
+# 18     f4a_drh_bellypain 1.751672e+00
+# 19            f4b_mental 1.697971e+00
+# 20          f4a_ms_water 1.697682e+00
+# 21             f4b_mouth 1.668625e+00
+# 22        f4a_disp_feces 1.504898e+00
+# 23         f4a_fac_waste 1.503561e+00
+# 24    f4a_drh_cough_miss 1.314603e+00
+# 25         f4a_drh_vomit 1.262012e+00
+# 26             f3_gender 1.250074e+00
+# 27  f4a_drh_lethrgy_miss 1.230022e+00
+# 28         f3_drh_turgor 1.202978e+00
+# 29       f4a_house_phone 1.164557e+00
+# 30         f4a_trt_water 1.156389e+00
+# 31      f4a_relationship 1.155844e+00
+# 32        f4a_house_tele 1.153765e+00
+# 33          f4a_wash_use 1.152076e+00
+# 34        f4a_wash_child 1.152031e+00
+# 35    f4a_cur_fastbreath 1.126550e+00
+# 36      f4a_cur_drymouth 1.119658e+00
+# 37       f4a_cur_thirsty 1.112085e+00
+# 38          f4a_wash_def 1.060936e+00
+# 39              f4b_skin 1.060243e+00
+# 40      f4a_seek_outside 1.051916e+00
+# 41            f4a_ani_no 1.050806e+00
+# 42       f4a_store_water 1.049925e+00
+# 43      f4a_cur_restless 1.036974e+00
+# 44        f4a_wash_nurse 1.033645e+00
+# 45        f4a_drh_thirst 1.025225e+00
+# 46      f4a_hometrt_none 1.020620e+00
+# 47       f4a_water_house 1.019899e+00
+# 48        f4a_drh_strain 1.013854e+00
+# 49          f4a_cur_skin 1.013093e+00
+# 50       f4a_hometrt_ors 9.901571e-01
+# 51        f4b_under_nutr 9.868859e-01
+# 52     f4a_drh_lessdrink 9.716423e-01
+# 53             f4a_floor 9.500475e-01
+# 54      f4a_house_fridge 9.437988e-01
+# 55       f4a_house_scoot 9.392284e-01
+# 56          f4a_wash_eat 9.248429e-01
+# 57      f4a_drh_restless 9.182633e-01
+# 58          f4a_ani_goat 9.074394e-01
+# 59         f4a_wash_cook 9.015962e-01
+# 60      f4a_seek_privdoc 8.899935e-01
+# 61      f4a_water_bought 8.783368e-01
+# 62         f4a_drh_blood 8.287467e-01
+# 63       f4a_fuel_natgas 8.078868e-01
+# 64          f4a_ani_fowl 7.937874e-01
+# 65              f4b_eyes 7.822678e-01
+# 66     f4a_hometrt_othr1 7.808812e-01
+# 67         f4a_fuel_wood 7.460616e-01
+# 68      f4b_nature_stool 7.314007e-01
+# 69        f4a_seek_pharm 7.272726e-01
+# 70         f4a_fuel_kero 7.221161e-01
+# 71        f4a_house_bike 7.111921e-01
+# 72        f4a_hometrt_ab 7.104600e-01
+# 73           f4a_ani_cow 7.103457e-01
+# 74      f4a_water_pubtap 6.880563e-01
+# 75          f4a_seek_doc 6.855219e-01
+# 76      f4a_hometrt_zinc 6.817475e-01
+# 77        f4a_water_yard 6.332967e-01
+# 78       f4a_house_radio 6.000122e-01
+# 79         f4a_drh_consc 5.955145e-01
+# 80           f4a_ani_cat 5.861217e-01
+# 81       f4a_wash_animal 5.831491e-01
+# 82        f4a_water_othr 5.604023e-01
+# 83     f4a_hometrt_maize 5.544374e-01
+# 84          f4a_dad_live 5.531853e-01
+# 85         f4a_wash_othr 5.491048e-01
+# 86        f4a_fuel_grass 5.453877e-01
+# 87     f4a_hometrt_othr2 5.035765e-01
+# 88           f4a_ani_dog 5.018777e-01
+# 89        f4a_house_boat 4.325379e-01
+# 90        f4a_house_none 4.314414e-01
+# 91      f4a_hometrt_herb 4.289553e-01
+# 92       f4a_fuel_biogas 4.196083e-01
+# 93       f4b_chest_indrw 4.173780e-01
+# 94        f4a_house_elec 4.033030e-01
+# 95          f4b_abn_hair 3.872357e-01
+# 96        f4b_skin_flaky 3.830558e-01
+# 97        f4a_seek_other 3.609889e-01
+# 98   f4a_hometrt_othrliq 3.470029e-01
+# 99           f3_drh_hosp 3.274687e-01
+# 100       f4a_house_cart 3.060559e-01
+# 101     f4a_drh_prolapse 2.990660e-01
+# 102        f4a_ani_other 2.414255e-01
+# 103        f4a_house_car 2.135963e-01
+# 104     f4a_house_agland 2.037362e-01
+# 105      f4a_seek_healer 2.034082e-01
+# 106        f4a_fuel_dung 1.974180e-01
+# 107        f4a_ani_sheep 1.926353e-01
+# 108       f4a_water_bore 1.823860e-01
+# 109       f4a_seek_remdy 1.322235e-01
+# 110     f4a_hometrt_milk 1.024878e-01
+# 111            f4b_admit 8.501591e-02
+# 112    f4a_water_covwell 7.213989e-02
+# 113           f4b_rectal 7.056180e-02
+# 114         f4a_drh_conv 4.043283e-02
+# 115     f4a_fuel_propane 1.306946e-02
+# 116          f4b_bipedal 5.963814e-03
+# 117      f4a_ani_rodents 3.726625e-03
+# 118      f4a_seek_friend 2.169604e-03
+# 119       f4a_water_pond 1.943644e-03
+# 120        f4a_fuel_elec 1.743034e-03
+# 121   f4a_water_covpwell 9.425483e-04
+# 122                 site 0.000000e+00
+# 123        f4a_fuel_coal 0.000000e+00
+# 124    f4a_fuel_charcoal 0.000000e+00
+# 125        f4a_fuel_crop 0.000000e+00
+# 126       f4a_fuel_other 0.000000e+00
+# 127  f4a_water_prospring 0.000000e+00
+# 128       f4a_water_well 0.000000e+00
+# 129   f4a_water_unspring 0.000000e+00
+# 130    f4a_water_pubwell 0.000000e+00
+# 131      f4a_water_river 0.000000e+00
+# 132   f4a_water_deepwell 0.000000e+00
+# 133       f4a_water_rain 0.000000e+00
+# 134  f4a_water_shallwell 0.000000e+00
+# 135    f4b_observe_stool 0.000000e+00
+
+# AUC          SE     lower     upper level Model nvar
+# 1 0.6768255 0.004193596 0.6686062 0.6850448  0.95    LR    5
+# 2 0.6783018 0.004219604 0.6700315 0.6865721  0.95    LR   10
+# 3 0.6244680 0.004461196 0.6157242 0.6332118  0.95    RF    5
+# 4 0.6457302 0.004484582 0.6369406 0.6545198  0.95    RF   10
+
+# nvar    intc intc_LCI intc_UCI slope slope_LCI slope_UCI
+# <dbl>   <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
+#   1     5 0.00806   -0.357    0.356 0.995     0.483      1.60
+# 2    10 0.00804   -0.365    0.363 0.725     0.339      1.17
+
+################### by country growth falter - Africa, val in Asia ####
+GF.Afr <- CPR.funct(data=cases_gf_Afr,outcome="haz_0.5",iter=100,nvars_opts=c(1:10))
+GF.Afr[["df_imps"]]
+GF.Afr[["AUC_df"]]
+GF.Afr[["calib"]]
+
+# names     var_red
+# 1               base_age 57.10262405
+# 2                f4b_haz 44.24762393
+# 3               f4b_resp 29.75596682
+# 4               f4b_temp 26.72987026
+# 5          f4a_ppl_house 21.59905392
+# 6          f4a_breastfed 18.25355763
+# 7          f4a_slp_rooms 15.60292624
+# 8           f4a_drh_days 13.59066709
+# 9       f4a_yng_children 13.51014807
+# 10         f4a_share_fac 10.63364086
+# 11         f4a_prim_schl  9.66344186
+# 12        f4a_offr_drink  9.41890877
+# 13          f4a_dad_live  7.56507403
+# 14          f4a_ms_water  6.33785443
+# 15         f4a_drh_vomit  6.33605711
+# 16                  site  6.27818967
+# 17        f4a_disp_feces  6.25546209
+# 18     f4a_drh_bellypain  6.12204399
+# 19       f4a_water_avail  5.95895111
+# 20         f4b_recommend  5.68003276
+
+# AUC          SE     lower     upper level Model nvar
+# 1  0.6960657 0.001932004 0.6922790 0.6998523  0.95    LR    1
+# 2  0.7217561 0.001898149 0.7180358 0.7254764  0.95    LR    2
+# 3  0.7219368 0.001896142 0.7182204 0.7256532  0.95    LR    3
+# 4  0.7269166 0.001885593 0.7232209 0.7306123  0.95    LR    4
+# 5  0.7266771 0.001888584 0.7229756 0.7303787  0.95    LR    5
+# 6  0.7266815 0.001886555 0.7229840 0.7303791  0.95    LR    6
+# 7  0.7259301 0.001887654 0.7222303 0.7296298  0.95    LR    7
+# 8  0.7255394 0.001889684 0.7218357 0.7292431  0.95    LR    8
+# 9  0.7254812 0.001890899 0.7217751 0.7291873  0.95    LR    9
+# 10 0.7263290 0.001887481 0.7226296 0.7300284  0.95    LR   10
+# 11 0.6937189 0.001970490 0.6898568 0.6975810  0.95    RF    1
+# 12 0.6942569 0.002001299 0.6903344 0.6981794  0.95    RF    2
+# 13 0.6962220 0.001982624 0.6923361 0.7001078  0.95    RF    3
+# 14 0.7000508 0.001977154 0.6961756 0.7039259  0.95    RF    4
+# 15 0.7006481 0.001964094 0.6967985 0.7044976  0.95    RF    5
+# 16 0.7087007 0.001941394 0.7048956 0.7125058  0.95    RF    6
+# 17 0.7134216 0.001936496 0.7096262 0.7172171  0.95    RF    7
+# 18 0.7147910 0.001929779 0.7110087 0.7185733  0.95    RF    8
+# 19 0.7169556 0.001925247 0.7131822 0.7207290  0.95    RF    9
+# 20 0.7185634 0.001916599 0.7148069 0.7223198  0.95    RF   10
+
+# nvar      intc intc_LCI intc_UCI slope slope_LCI slope_UCI
+# <int>     <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
+#   1     1 -0.000188   -0.174    0.170 1.01      0.766      1.28
+# 2     2 -0.00294    -0.178    0.169 1.02      0.793      1.27
+# 3     3 -0.00305    -0.179    0.169 1.02      0.790      1.27
+# 4     4 -0.00396    -0.180    0.168 1.02      0.791      1.26
+# 5     5 -0.00373    -0.180    0.169 1.01      0.787      1.25
+# 6     6 -0.00333    -0.180    0.169 1.01      0.785      1.25
+# 7     7 -0.00360    -0.180    0.169 1.00      0.780      1.24
+# 8     8 -0.00352    -0.180    0.169 0.998     0.777      1.24
+# 9     9 -0.00346    -0.180    0.169 0.995     0.774      1.23
+# 10    10 -0.00335    -0.180    0.169 0.993     0.773      1.23
+
+
+GEMS_glm_gf_Afr_2var <- glm(haz_0.5~base_age+f4b_haz,
+                        data=cases_gf_Afr,family="binomial",control=glm.control(maxit=50))
+summary(GEMS_glm_gf_Afr_2var)
+# Estimate Std. Error z value Pr(>|z|)    
+# (Intercept)  0.247666   0.075115   3.297 0.000977 ***
+#   base_age    -0.080911   0.004982 -16.239  < 2e-16 ***
+#   f4b_haz      0.240613   0.033870   7.104 1.21e-12 ***
+
+round(exp(coef(GEMS_glm_gf_Afr_2var)),2)
+# (Intercept)    base_age     f4b_haz 
+# 1.28        0.92        1.27 
+round(exp(confint(GEMS_glm_gf_Afr_2var)),2)
+# 2.5 % 97.5 %
+#   (Intercept)  1.11   1.49
+# base_age     0.91   0.93
+# f4b_haz      1.19   1.36
+
+Afr_2var_AfrFit<-cases_gf_Afr %>% select(haz_0.5,base_age,f4b_haz)
+Afr_2var_AfrFit$Afr_pred_glm <- as.numeric(predict(GEMS_glm_gf_Afr_2var,newdata=Afr_2var_AfrFit,type="response"))
+Afr_2var_AfrFit_AUC <- roc(response=Afr_2var_AfrFit$haz_0.5,predictor=Afr_2var_AfrFit$Afr_pred_glm)
+paste(round(Afr_2var_AfrFit_AUC$auc,2)," (",
+      round(ci.auc(Afr_2var_AfrFit_AUC)[1],2),", ",
+      round(ci.auc(Afr_2var_AfrFit_AUC)[3],2),")",sep="")
+# "0.72 (0.7, 0.74)"
+
+Asia_2var_AfrFit<-cases_gf_Asia %>% select(haz_0.5,base_age,f4b_haz)
+Asia_2var_AfrFit$Afr_pred_glm <- as.numeric(predict(GEMS_glm_gf_Afr_2var,newdata=Asia_2var_AfrFit,type="response"))
+Asia_2var_AfrFit_AUC <- roc(response=Asia_2var_AfrFit$haz_0.5,predictor=Asia_2var_AfrFit$Afr_pred_glm)
+paste(round(Asia_2var_AfrFit_AUC$auc,2)," (",
+      round(ci.auc(Asia_2var_AfrFit_AUC)[1],2),", ",
+      round(ci.auc(Asia_2var_AfrFit_AUC)[3],2),")",sep="")
+# "0.7 (0.68, 0.72)"
+
+################### by country growth falter - Asia, val in Africa ####
+GF.Asia <- CPR.funct(data=cases_gf_Asia,outcome="haz_0.5",iter=100,nvars_opts=c(1:10))
+GF.Asia[["df_imps"]]
+GF.Asia[["AUC_df"]]
+GF.Asia[["calib"]]
+
+# names      var_red
+# 1               base_age 43.394018396
+# 2                f4b_haz 39.162187310
+# 3               f4b_resp 26.198910692
+# 4               f4b_temp 25.746587237
+# 5          f4a_ppl_house 17.552034280
+# 6          f4a_share_fac 13.849865054
+# 7           f4a_drh_days 12.476471870
+# 8          f4a_slp_rooms 10.627188462
+# 9          f4a_prim_schl 10.098786483
+# 10         f4a_fac_waste  8.854699781
+# 11         f4b_recommend  7.855568018
+# 12      f4a_yng_children  7.770585683
+# 13        f4a_offr_drink  7.230399947
+# 14        f4a_max_stools  6.898982695
+# 15        f4a_disp_feces  6.437183038
+# 16         f4a_breastfed  6.236767163
+# 17     f4a_drh_bellypain  5.929644952
+# 18          f4a_wash_use  5.389219430
+# 19            f4b_mental  5.077336505
+# 20          f4a_ms_water  4.731808133
+# 21             f3_gender  4.694774205
+# 22        f4a_trt_method  4.544110761
+# 23        f4a_wash_child  4.405502868
+# 24        f4a_drh_thirst  4.358823224
+# 25        f4a_wash_nurse  4.338956269
+# 26    f4a_drh_cough_miss  4.268903451
+# 27       f4a_cur_thirsty  4.250888501
+# 28         f4a_drh_vomit  4.187900495
+# 29             f3_drh_iv  4.056148882
+# 30        f4a_house_tele  4.036770545
+# 31          f4a_ani_fowl  3.986750978
+# 32         f4a_wash_cook  3.973577607
+# 33          f4a_dad_live  3.913027829
+# 34  f4a_drh_lethrgy_miss  3.906574167
+# 35       f4a_hometrt_ors  3.892174404
+# 36        f4a_house_bike  3.849774094
+# 37       f4a_house_phone  3.842224422
+# 38          f4a_wash_eat  3.841517159
+# 39          f4a_wash_def  3.838995223
+# 40      f4a_hometrt_none  3.744705302
+# 41      f4a_drh_restless  3.729994916
+# 42      f4a_cur_restless  3.647107191
+# 43       f4a_water_avail  3.629096738
+# 44         f4a_fuel_wood  3.619510458
+# 45       f4a_house_radio  3.601355729
+# 46      f4a_seek_outside  3.593278671
+# 47             f4b_admit  3.537389239
+# 48      f4a_cur_drymouth  3.455451307
+# 49             f4b_mouth  3.450135631
+# 50          f4a_cur_skin  3.373349817
+# 51             f4a_floor  3.315650668
+# 52        f4a_house_elec  3.281507321
+# 53           f4a_ani_dog  3.279967615
+# 54        f4a_hometrt_ab  3.252335878
+# 55     f4a_drh_lessdrink  3.173847565
+# 56      f4b_nature_stool  3.157606149
+# 57           f3_drh_hosp  3.134613197
+# 58           f4a_ani_cat  3.131021629
+# 59         f4a_trt_water  2.999275206
+# 60        f4a_drh_strain  2.996284004
+# 61       f4a_store_water  2.984713334
+# 62       f4a_wash_animal  2.906434962
+# 63     f4a_hometrt_othr1  2.900442362
+# 64           f4a_ani_cow  2.823392627
+# 65        f4a_seek_pharm  2.776757580
+# 66         f4a_drh_blood  2.758771237
+# 67          f4a_ani_goat  2.685885247
+# 68         f3_drh_turgor  2.664442325
+# 69    f4a_water_deepwell  2.594359652
+# 70       f4a_ani_rodents  2.573042059
+# 71         f4a_fuel_kero  2.491627510
+# 72         f4a_fuel_dung  2.474566719
+# 73       f4a_house_scoot  2.449228501
+# 74              f4b_skin  2.437066802
+# 75                  site  2.413726135
+# 76      f4a_house_fridge  2.395771859
+# 77   f4a_water_shallwell  2.373143358
+# 78              f4b_eyes  2.348074643
+# 79    f4a_cur_fastbreath  2.325223144
+# 80      f4a_house_agland  2.303167978
+# 81      f4a_seek_privdoc  2.295216390
+# 82         f4a_wash_othr  2.257062787
+# 83     f4a_hometrt_othr2  2.205117605
+# 84      f4a_water_pubtap  2.200490857
+# 85          f4a_seek_doc  2.199549726
+# 86        f4a_fuel_grass  2.188993248
+# 87      f4a_hometrt_zinc  2.146074536
+# 88        f4a_water_yard  2.100557971
+# 89         f4a_fuel_crop  2.090813991
+# 90            f4a_ani_no  2.046911534
+# 91     f4a_hometrt_maize  1.995187088
+# 92       f4a_fuel_natgas  1.977060982
+# 93         f4a_fuel_coal  1.947177045
+# 94       f4a_water_house  1.915465733
+# 95        f4b_under_nutr  1.904088828
+# 96      f4a_fuel_propane  1.850175534
+# 97        f4a_seek_remdy  1.765773519
+# 98        f4a_house_none  1.650215981
+# 99      f4a_relationship  1.476377637
+# 100     f4a_water_bought  1.279484651
+# 101        f4a_ani_other  1.266889919
+# 102       f4a_seek_other  1.164722439
+# 103       f4a_water_othr  1.108734044
+# 104        f4a_ani_sheep  1.009671159
+# 105     f4a_drh_prolapse  0.970743836
+# 106        f4a_house_car  0.881226351
+# 107        f4a_drh_consc  0.819511902
+# 108       f4a_house_cart  0.785340911
+# 109     f4a_hometrt_herb  0.767702936
+# 110         f4a_drh_conv  0.748712632
+# 111       f4a_house_boat  0.730504696
+# 112      f4b_chest_indrw  0.669674385
+# 113  f4a_hometrt_othrliq  0.635331587
+# 114    f4a_fuel_charcoal  0.496573095
+# 115         f4b_abn_hair  0.474782998
+# 116      f4a_seek_healer  0.457038360
+# 117      f4a_fuel_biogas  0.454031572
+# 118       f4b_skin_flaky  0.383333216
+# 119    f4a_water_covwell  0.310059634
+# 120    f4b_observe_stool  0.265099741
+# 121       f4a_water_well  0.224994066
+# 122     f4a_hometrt_milk  0.157637340
+# 123        f4a_fuel_elec  0.152432067
+# 124       f4a_water_bore  0.144163456
+# 125      f4a_seek_friend  0.103116884
+# 126          f4b_bipedal  0.092291793
+# 127           f4b_rectal  0.082326273
+# 128       f4a_fuel_other  0.070772376
+# 129       f4a_water_pond  0.002835225
+# 130    f4a_water_pubwell  0.001376963
+# 131   f4a_water_covpwell  0.000000000
+# 132  f4a_water_prospring  0.000000000
+# 133   f4a_water_unspring  0.000000000
+# 134      f4a_water_river  0.000000000
+# 135       f4a_water_rain  0.000000000
+
+# AUC          SE     lower     upper level Model nvar
+# 1  0.6780355 0.002205548 0.6737127 0.6823583  0.95    LR    1
+# 2  0.7002125 0.002162853 0.6959734 0.7044517  0.95    LR    2
+# 3  0.7017679 0.002156911 0.6975404 0.7059954  0.95    LR    3
+# 4  0.7151814 0.002142659 0.7109818 0.7193809  0.95    LR    4
+# 5  0.7168104 0.002134363 0.7126272 0.7209937  0.95    LR    5
+# 6  0.7162167 0.002136637 0.7120290 0.7204044  0.95    LR    6
+# 7  0.7161437 0.002147764 0.7119342 0.7203533  0.95    LR    7
+# 8  0.7160615 0.002148139 0.7118512 0.7202717  0.95    LR    8
+# 9  0.7177553 0.002145614 0.7135500 0.7219606  0.95    LR    9
+# 10 0.7204542 0.002132374 0.7162748 0.7246336  0.95    LR   10
+# 11 0.6614264 0.002242712 0.6570308 0.6658221  0.95    RF    1
+# 12 0.6593439 0.002269015 0.6548967 0.6637911  0.95    RF    2
+# 13 0.6684152 0.002236634 0.6640315 0.6727990  0.95    RF    3
+# 14 0.6873872 0.002194607 0.6830859 0.6916886  0.95    RF    4
+# 15 0.6943380 0.002168187 0.6900885 0.6985876  0.95    RF    5
+# 16 0.6996902 0.002148439 0.6954794 0.7039011  0.95    RF    6
+# 17 0.6998748 0.002150576 0.6956598 0.7040899  0.95    RF    7
+# 18 0.7051347 0.002141973 0.7009365 0.7093329  0.95    RF    8
+# 19 0.7071173 0.002141621 0.7029198 0.7113148  0.95    RF    9
+# 20 0.7106430 0.002128009 0.7064721 0.7148138  0.95    RF   10
+
+# nvar   intc intc_LCI intc_UCI slope slope_LCI slope_UCI
+# <int>  <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
+#   1     1 0.0132   -0.171    0.192 1.01      0.715      1.33
+# 2     2 0.0129   -0.173    0.194 1.01      0.747      1.30
+# 3     3 0.0132   -0.173    0.194 0.999     0.738      1.28
+# 4     4 0.0158   -0.172    0.198 1.01      0.760      1.28
+# 5     5 0.0148   -0.173    0.197 1.01      0.759      1.27
+# 6     6 0.0145   -0.173    0.197 1.00      0.756      1.27
+# 7     7 0.0147   -0.173    0.197 0.994     0.749      1.26
+# 8     8 0.0145   -0.173    0.197 0.982     0.740      1.24
+# 9     9 0.0151   -0.173    0.199 0.953     0.720      1.20
+# 10    10 0.0140   -0.175    0.198 0.928     0.703      1.17
+
+GEMS_glm_gf_Asia_2var <- glm(haz_0.5~base_age+f4b_haz,
+                            data=cases_gf_Asia,family="binomial",control=glm.control(maxit=50))
+summary(GEMS_glm_gf_Asia_2var)
+# Estimate Std. Error z value Pr(>|z|)    
+# (Intercept)  0.025252   0.082180   0.307    0.759    
+# base_age    -0.069413   0.005223 -13.290  < 2e-16 ***
+#   f4b_haz      0.271430   0.036264   7.485 7.17e-14 ***
+
+round(exp(coef(GEMS_glm_gf_Asia_2var)),2)
+# (Intercept)    base_age     f4b_haz 
+# 1.03        0.93        1.31 
+round(exp(confint(GEMS_glm_gf_Asia_2var)),2)
+# 2.5 % 97.5 %
+#   (Intercept)  0.87   1.21
+# base_age     0.92   0.94
+# f4b_haz      1.22   1.41
+
+Asia_2var_AsiaFit<-cases_gf_Asia %>% select(haz_0.5,base_age,f4b_haz)
+Asia_2var_AsiaFit$Asia_pred_glm <- as.numeric(predict(GEMS_glm_gf_Asia_2var,newdata=Asia_2var_AsiaFit,type="response"))
+Asia_2var_AsiaFit_AUC <- roc(response=Asia_2var_AsiaFit$haz_0.5,predictor=Asia_2var_AsiaFit$Asia_pred_glm)
+paste(round(Asia_2var_AsiaFit_AUC$auc,2)," (",
+      round(ci.auc(Asia_2var_AsiaFit_AUC)[1],2),", ",
+      round(ci.auc(Asia_2var_AsiaFit_AUC)[3],2),")",sep="")
+# [1] "0.7 (0.68, 0.72)"
+
+Afr_2var_AsiaFit<-cases_gf_Afr %>% select(haz_0.5,base_age,f4b_haz)
+Afr_2var_AsiaFit$Asia_pred_glm <- as.numeric(predict(GEMS_glm_gf_Asia_2var,newdata=Afr_2var_AsiaFit,type="response"))
+Afr_2var_AsiaFit_AUC <- roc(response=Afr_2var_AsiaFit$haz_0.5,predictor=Afr_2var_AsiaFit$Asia_pred_glm)
+paste(round(Afr_2var_AsiaFit_AUC$auc,2)," (",
+      round(ci.auc(Afr_2var_AsiaFit_AUC)[1],2),", ",
+      round(ci.auc(Afr_2var_AsiaFit_AUC)[3],2),")",sep="")
+# [1] "0.72 (0.71, 0.74)"
+
+################### growth falter - not stunted at enrollment (HAZ>=-2) ####
+GF.notStunt <- CPR.funct(data=cases_gf_notStunt,outcome="haz_0.5",iter=10,nvars_opts=c(5,10))
+GF.notStunt[["df_imps"]]
+GF.notStunt[["AUC_df"]]
+GF.notStunt[["calib"]]
+
+################### predict stunting at f-up, not growth faltering ####
+post.stunt <- CPR.funct(data=complete_gf,outcome="post.stunt",iter=10,nvars_opts=c(5,10))
+post.stunt[["df_imps"]]
+post.stunt[["AUC_df"]]
+post.stunt[["calib"]]
+
+
+################### predict stunting at f-up among not stunted at enrollment ####
+post.stunt2 <- CPR.funct(data=cases_gf_notStunt,outcome="post.stunt",iter=10,nvars_opts=c(5,10))
+post.stunt2[["df_imps"]]
+post.stunt2[["AUC_df"]]
+post.stunt2[["calib"]]
+
+
+
 ################### external validation: 2-variable growth faltering 0-23mo ####
-GEMS_glm_gf_age4 <- glm(haz_0.5~base_age+f4b_haz,
-                        data=cases_gf_age4,family="binomial",control=glm.control(maxit=50))
-summary(GEMS_glm_gf_age4)
+GEMS_glm_gf_age4_2var <- glm(haz_0.5~base_age+f4b_haz,
+                   data=cases_gf_age4,family="binomial",control=glm.control(maxit=50))
+summary(GEMS_glm_gf_age4_2var)
 # Estimate Std. Error z value Pr(>|z|)    
 # (Intercept) -0.059304   0.066154  -0.896     0.37    
 # base_age    -0.051969   0.005421  -9.587   <2e-16 ***
@@ -4268,7 +5819,17 @@ summary(GEMS_glm_gf_age4)
 round(coef(GEMS_glm_gf_age4),4)
 # (Intercept)    base_age     f4b_haz 
 # -0.0593     -0.0520      0.2705
-#save(GEMS_glm_gf_age4, file = "C://GEMS_glm_gf_age4.Rdata")
+#save(GEMS_glm_gf_age4, file = "/GEMS_glm_gf_age4.Rdata")
+
+round(exp(coef(GEMS_glm_gf_age4_2var)),2)
+# (Intercept)    base_age     f4b_haz 
+# 0.94        0.95        1.31 
+round(exp(confint(GEMS_glm_gf_age4_2var)),2)
+# 2.5 % 97.5 %
+#   (Intercept)  0.83   1.07
+# base_age     0.94   0.96
+# f4b_haz      1.25   1.38
+
 
 GEMS_2var_age4<-cases_gf_age4 %>% select(haz_0.5,base_age,f4b_haz)
 GEMS_2var_age4$pred_glm <- as.numeric(predict(GEMS_glm_gf_age4,newdata=GEMS_2var_age4,type="response"))
@@ -4294,13 +5855,13 @@ paste(round(GEMS_AUC_age4$auc,2)," (",
 
 GEMS_decilesCC_age4 <- GEMS_2var_age4 %>% mutate(decile_glm=ntile(pred_glm,10)) %>%
   group_by(decile_glm) %>% summarize(mean(haz_0.5),mean(pred_glm))
-#save(GEMS_decilesCC_age4, file = "C://GEMS_decilesCC_age4.Rdata")
+#save(GEMS_decilesCC_age4, file = "/GEMS_decilesCC_age4.Rdata")
 
 #will be slightly different every time since data is a random sample in MAL-ED
-load(file = "C://MALED_data_age023.Rdata")
+load(file = "/MALED_data_age023.Rdata")
 MALED_2var_age4<-data_age4 %>% select(haz_0.5,age,HAZ_1) %>% mutate(age_mo=age/30) %>% #GEMS age in months, MALED age is in days
   rename(f4b_haz = HAZ_1,base_age = age_mo)
-load(file = "C://GEMS_glm_gf_age4.Rdata")
+load(file = "/GEMS_glm_gf_age4.Rdata")
 MALED_2var_age4$GEMS_pred_glm <- as.numeric(predict(GEMS_glm_gf_age4,newdata=MALED_2var_age4,type="response"))
 # MALED_AUC_age4 <- AUC(predictions=MALED_2var_age4$GEMS_pred_glm,labels=MALED_2var_age4$haz_0.5)
 # MALED_AUC_age4
@@ -4327,14 +5888,17 @@ paste(round(MALED_AUC_age4$auc,2)," (",
 
 MALED_decilesCC_age4 <- MALED_2var_age4 %>% mutate(decile_glm=ntile(GEMS_pred_glm,10)) %>%
   group_by(decile_glm) %>% summarize(mean(haz_0.5),mean(GEMS_pred_glm))
-#save(MALED_decilesCC_age4, file = "C://MALED_decilesCC_age4.Rdata")
+#save(MALED_decilesCC_age4, file = "/MALED_decilesCC_age4.Rdata")
 
 
 
-load(file = "C://GEMS_decilesCC_age4.Rdata")
-load(file = "C://MALED_decilesCC_age4.Rdata")
+load(file = "/GEMS_decilesCC_age4.Rdata")
+load(file = "/MALED_decilesCC_age4.Rdata")
 
-#jpeg("C://GF_CC_GEMS023_MALED.jpg",width=600,height=480,quality=400)
+#jpeg("/GF_CC_GEMS023_MALED.jpg",width=600,height=480,quality=400)
+#width and height in pixels (600/72)*300 (480/72)*300. need min 10cm across for eLife
+  #((600*1.2)/72)*300 ((480*1.2)/72)*300
+#png("/GF_CC_GEMS023_MALED_highres.png",units="px",width=3000,height=2400,res=300)
 plot(x=seq(0,1,by=0.1),y=seq(0,1,by=0.1),type="l",
      xlab="Predicted Probability",ylab="Observed Proportion",
      main=expression(paste("Calibration Curve:","">=0.5,Delta,"HAZ in diarrhea cases 0-23mo,")))
@@ -4366,25 +5930,45 @@ confint(slope)
 # Estimate Std. Error z value Pr(>|z|)    
 # (Intercept)                              0.1896     0.2663   0.712    0.476    
 # log(GEMS_pred_glm/(1 - GEMS_pred_glm))   1.5491     0.2687   5.765 8.16e-09 ***
-# 2.5 %    97.5 %
+  # 2.5 %    97.5 %
 #   (Intercept)                            -0.3322444 0.7137498
 # log(GEMS_pred_glm/(1 - GEMS_pred_glm))  1.0343467 2.0896629
 
 ####################
-#GEMS CONTROLS
+#Publication - GEMS CONTROLS all duplicates of code lower below
 ################### define variables ####
 controls <- gems1 %>% filter(type=="Control")
 #13128
 
-controls=controls %>% mutate(haz_dif = f7_haz - f5_haz)
-controls=controls %>% mutate(haz_1.0=(case_when(haz_dif>=1.0 ~ 1, TRUE~0)))
-controls=controls %>% mutate(haz_0.5=(case_when(haz_dif>=0.5 ~ 1, TRUE~0)))
+controls=controls %>% mutate(haz_dif = f7_haz - f5_haz) #dat_joined$haz_dif <- dat_joined$f4b_haz - dat_joined$f5_haz
+# summary(controls$haz_dif)
+# Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
+# -12.8100  -0.1400   0.0800   0.1034   0.3400  22.8600      814 
+controls=controls %>% mutate(haz_1.0=(case_when(haz_dif>=1.0 ~ 1, TRUE~0))) #dat_joined$haz_0.1 <- ifelse(dat_joined$haz_dif<=-1.0,1,0)
+# table(controls$haz_1.0)
+# 0     1 
+# 12641   487
+controls=controls %>% mutate(haz_0.5=(case_when(haz_dif>=0.5 ~ 1, TRUE~0))) #dat_joined$haz_0.5 <- ifelse(dat_joined$haz_dif<=-0.5,1,0)
+# table(controls$haz_0.5)
+# 0     1 
+# 11097  2031 
+#see pg 51 of notebook for manual checks
 
 controls=controls %>% mutate(change_ht = f5_height - f7_height)
+# summary(controls$change_ht)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# -48.933   1.000   1.733   1.907   2.600  33.000     814 
 
 controls$f7_date_date <- as.Date(as.character(controls$f7_date))
 controls$f5_date_date <- as.Date(as.character(controls$f5_date))
 controls$fup_days <- as.numeric(controls$f5_date_date - controls$f7_date_date)
+
+# #control enrollment antibiotic variables
+# abx_controls <- c("f7_med_cotr","f7_med_gent","f7_med_chlor",
+#                   "f7_med_eryth","f7_med_azith","f7_med_omacr",
+#                   "f7_med_peni","f7_med_amoxy","f7_med_ampi",
+#                   "f7_med_nalid","f7_med_cipro","f7_med_sele",
+#                   "f7_med_otherant")
 
 #too few so combine
 controls$f7_floor <- as.character(controls$f7_floor)
@@ -4392,12 +5976,18 @@ controls <- controls %>% mutate(f7_floor=case_when((f7_floor=="3")~"10",(f7_floo
 
 #combine to fewer categories: f4a_ms_water
 
+table(controls$f7_ms_water)
+#   1    2    3    4    5    6    7    8    9   10   11   12   13   14   15   16   17   18 
+# 702 1628 4273  105  387   92 1917 1077   43  166  104   90  407   18  755  742  497  125 
 controls=controls %>% mutate(f7_ms_water=(case_when((f7_ms_water==6 | f7_ms_water==13 | f7_ms_water==14) ~ 0, #surface 
-                                                    (f7_ms_water==4 | f7_ms_water==5 | f7_ms_water==12 | f7_ms_water==16) ~ 1, #unimproved
-                                                    (f7_ms_water==3 | f7_ms_water==7 | f7_ms_water==8 | f7_ms_water==9 |
-                                                       f7_ms_water==10 | f7_ms_water==11 | f7_ms_water==15 | f7_ms_water==17) ~ 2, #other improved
-                                                    (f7_ms_water==1 | f7_ms_water==2) ~ 3, #piped
-                                                    TRUE~4))) #other
+                                                         (f7_ms_water==4 | f7_ms_water==5 | f7_ms_water==12 | f7_ms_water==16) ~ 1, #unimproved
+                                                         (f7_ms_water==3 | f7_ms_water==7 | f7_ms_water==8 | f7_ms_water==9 |
+                                                            f7_ms_water==10 | f7_ms_water==11 | f7_ms_water==15 | f7_ms_water==17) ~ 2, #other improved
+                                                         (f7_ms_water==1 | f7_ms_water==2) ~ 3, #piped
+                                                         TRUE~4))) #other
+# table(controls$test)
+# 0    1    2    3    4 
+# 517 1324 8832 2330  125 
 # #use JMP drinking water services ladder
 # #surface (subset of unimproved)
 # 6-pond/lake
@@ -4423,10 +6013,16 @@ controls=controls %>% mutate(f7_ms_water=(case_when((f7_ms_water==6 | f7_ms_wate
 # #other
 # 18-other
 
+# table(controls$f7_relation)
+#     1     2     3     4     5     6     7     8     9    10 
+# 12604   103    45     3   215     8   124     2    12    12  
 #creating a combined category for non-father male relation OR non relation (4,6,8,9)
 controls$f7_relation <- as.numeric(controls$f7_relation)
 controls=controls %>% mutate(f7_relation=(case_when((f7_relation==4 | f7_relation==6 | f7_relation==8 | f7_relation==9 | f7_relation==10) ~ 9, #non-father male relation, no relation, other 
-                                                    TRUE~f7_relation))) #what was originally
+                                                             TRUE~f7_relation))) #what was originally
+# table(controls$f7_relation)
+# 1     2     3     5     7     9 
+# 12604   103    45   215   124    37
 
 #convert to factor:
 vars <- c("site","f7_relation","f7_dad_live",
@@ -4436,45 +6032,7 @@ vars <- c("site","f7_relation","f7_dad_live",
           "f7_seekcare"
 )
 controls[vars] <- lapply(controls[vars], factor)
-
-# #binary 0/1:
-# "f7_house_elec", "f7_house_bike", "f7_house_phone",
-# "f7_house_tele", "f7_house_car", "f7_house_cart", 
-# "f7_house_scoot", "f7_house_fridge", "f7_house_agland",
-# "f7_house_radio", "f7_house_boat", "f7_house_none",
-# "f7_fuel_elec", "f7_fuel_biogas", "f7_fuel_grass",
-# "f7_fuel_propane", "f7_fuel_coal", "f7_fuel_dung",
-# "f7_fuel_natgas", "f7_fuel_charcoal", "f7_fuel_crop",
-# "f7_fuel_kero", "f7_fuel_wood", "f7_fuel_other",
-# "f7_ani_goat", "f7_ani_cow", "f7_ani_no",
-# "f7_ani_sheep", "f7_ani_rodents",
-# "f7_ani_dog", "f7_ani_fowl",
-# "f7_ani_cat", "f7_ani_other",
-# "f7_water_house", "f7_water_covwell",
-# "f7_water_yard", "f7_water_covpwell",
-# "f7_water_pubtap", "f7_water_prospring",
-# "f7_water_well", "f7_water_unspring",
-# "f7_water_pubwell", "f7_water_river",
-# "f7_water_pond", 
-# "f7_water_deepwell", "f7_water_rain",
-# "f7_water_shallwell", "f7_water_bought",
-# "f7_water_othr","f7_water_bore",
-# "f7_store_water","f7_trt_water",
-# "f7_wash_eat","f7_wash_animal",
-# "f7_wash_cook","f7_wash_child",
-# "f7_wash_nurse",
-# "f7_wash_def","f7_wash_othr",
-# "f7_bipedal","f7_abn_hair", 
-# "f7_under_nutr","f7_skin_flaky",
-
-# #continuous
-# "f7_ppl_house", "f7_yng_childrn", "f7_slp_rooms", 
-# "f7_temp","f7_share_fac","f7_resp",
-# "f7_haz","base_age"
-
-# #is listed in dictionary, want to consider, but not in dataset
-# f3_gender,f7_mom_live,f7_ppl_sleep,f7_water_dam,f7_wash_never,
-# f7_blood,f7_fever,f7_vomit,f7_cur_med,f7_offr_drink,f7_offr_eat,
+#this works too: test <- cases_orig %>% mutate_at(vars, list(~factor(.)))
 
 ################### inclusion/exclusion for growth faltering ####
 #no f4b_outcome equivalent for controls
@@ -4492,20 +6050,31 @@ controls[vars] <- lapply(controls[vars], factor)
 # length values that were > 1.5 cm lower at follow-up than at enrollment.
 
 controls$keep <- ifelse((controls$base_age<=6 & controls$fup_days>=49 & controls$fup_days<=60 & controls$change_ht<=8),1,
-                        ifelse((controls$base_age<=6 & controls$fup_days>=61 & controls$fup_days<=91 & controls$change_ht<=10),1,
-                               ifelse((controls$base_age>6 & controls$fup_days>=49 & controls$fup_days<=60 & controls$change_ht<=4),1,
-                                      ifelse((controls$base_age>6 & controls$fup_days>=61 & controls$fup_days<=91 & controls$change_ht<=6),1,
-                                             #ifelse((controls$fup_days<49 | controls$fup_days>91),1,0)
-                                             0))))
+                  ifelse((controls$base_age<=6 & controls$fup_days>=61 & controls$fup_days<=91 & controls$change_ht<=10),1,
+                  ifelse((controls$base_age>6 & controls$fup_days>=49 & controls$fup_days<=60 & controls$change_ht<=4),1,
+                  ifelse((controls$base_age>6 & controls$fup_days>=61 & controls$fup_days<=91 & controls$change_ht<=6),1,
+                  #ifelse((controls$fup_days<49 | controls$fup_days>91),1,0)
+                  0))))
+# summary(controls$keep)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+#  0.0000  1.0000  1.0000  0.9737  1.0000  1.0000     793 
+# table(controls$keep)
+# 0     1 
+# 325 12010
 controls <- controls %>% filter(keep==1)
+#12010 observations
+#keep missing for some, only keeping keep==1 drops missing change_ht too
 
 controls <- controls %>% filter((fup_days>=49 & fup_days<=91)& #n=; f-up time period criteria
-                                  (f7_haz_f==0)& #n=; f4b_haz_f: Flag for _ZLEN<-6 or _ZLEN>6
-                                  (abs(haz_dif)<=3.0)& #n=
-                                  (keep==1)& #n=
-                                  (change_ht>=-1.5)& #
-                                  (f5_status==1)& #n=; (==1 60d f-up conducted, 0==not conducted)
-                                  (!is.na(haz_dif))) #n=
+                                    (f7_haz_f==0)& #n=; f4b_haz_f: Flag for _ZLEN<-6 or _ZLEN>6
+                                    (abs(haz_dif)<=3.0)& #n=
+                                    (keep==1)& #n=
+                                    (change_ht>=-1.5)& #
+                                    (f5_status==1)& #n=; (==1 60d f-up conducted, 0==not conducted)
+                                    (!is.na(haz_dif))) #n=
+
+#cases_gf is now those who meet HAZ plausability and have follow-up HAZ measurement
+#table(controls$f4b_outcome_miss,is.na(controls$f5_haz),controls$death_all)
 
 
 ################### drop missing since can't have missing in RF, define "names" variables interested in ####
@@ -4519,6 +6088,7 @@ controls <- controls %>% filter(!is.na(f7_dad_live)&!is.na(f7_prim_schl)&!is.na(
                                   !is.na(f5_feces_visible)&!is.na(f7_disp_feces)&!is.na(f7_wash_use)&!is.na(f7_muac)&
                                   !is.na(f5_exp_rectal)&!is.na(f5_exp_convul)&!is.na(f5_exp_arthritis)&
                                   !is.na(f5_child_feces)&!is.na(f7_share_fac))
+#goes from 11889 to 11849 observations
 
 names <- c("site",
            "f7_relation","f7_dad_live",
@@ -4554,7 +6124,16 @@ names <- c("site",
            "f7_temp","f7_resp",   
            "f7_bipedal","f7_abn_hair","f7_under_nutr",     
            "f7_skin_flaky",
+           #"f9_memory_aid","wealth_index",
            "base_age")
+           #these all at 60d post enroll, therefore not useful at enrollment:
+           # 'f5_exp_drh', 'f5_exp_dys', 'f5_exp_cou', 'f5_exp_fever', 
+           # 'f5_diag_typ', 'f5_diag_mal', 'f5_diag_pne',
+           # 'f5_exp_rectal', 'f5_exp_convul', 'f5_exp_arthritis',
+           # 'f5_rectal', 'f5_bipedal', 'f5_abn_hair', 'f5_under_nutr', 'f5_skin_flaky',
+           # 'f5_ms_water', 'f5_main_cont', 'f5_treat_water', 'f5_trt_meth', 
+           # 'f5_wash_where',
+           # 'f5_child_feces', 'f5_feces_visible', 'f5_house_feces'
 
 ################### controls growth falter ####
 control <- CPR.funct(data=controls,outcome="haz_0.5",iter=100,nvars_opts=c(1:10,15,20,30,40,50))
@@ -4700,7 +6279,7 @@ control[["calib"]]
 
 temp <- control[["decilesCC"]][c("1","2","3","4","5","6","7","8","9","10","15","20","30","40","50")]
 names(temp) <- c("1-var","2-var","3-var","4-var","5-var","6-var","7-var","8-var","9-var","10-var","15-var","20-var","30-var","40-var","50-var")  #renaming
-#jpeg("C://GF_CC_GEMS059_controls.jpg",width=600,height=480,quality=400)
+#jpeg("/GF_CC_GEMS059_controls.jpg",width=600,height=480,quality=400)
 plot(x=seq(0,1,by=0.1),y=seq(0,1,by=0.1),type="l",
      xlab="Predicted Probability",ylab="Observed Proportion",
      main=expression(paste("Calibration Curve:","">=0.5,Delta,"HAZ in controls 0-59mo in GEMS")),
@@ -4711,7 +6290,11 @@ legend("topleft",col=c("red","blue"),c("5-variable","10-variable"),pch=c(1,2),ce
 dev.off()
 
 AUC_df <- control[["AUC_df"]]
-#jpeg("C://GF_AUCs_GEMS059_controls.jpg",width=600,height=480,quality=400)
+#save(AUC_df, file = "/AUC_df_GEMS059_controls.Rdata")
+#load(file = "/AUC_df_GEMS059_controls.Rdata")
+
+#jpeg(/GF_AUCs_GEMS059_controls.jpg",width=600,height=480,quality=400)
+#png("/GF_AUCs_GEMS059_controls.png",units="px",width=3000,height=2400,res=300)
 par(mar=c(5,5,4,2))
 plot(AUC_df$nvar[1:length(control[["nvars_opts"]])[1]],AUC_df$AUC[1:length(control[["nvars_opts"]])[1]],
      xlab="number of variables",ylab="AUC",
@@ -4720,15 +6303,15 @@ plot(AUC_df$nvar[1:length(control[["nvars_opts"]])[1]],AUC_df$AUC[1:length(contr
      pch=1,col="red",cex=2,lwd=2,cex.axis=1.5,cex.lab=1.5,cex.main=1.5)
 points(AUC_df$nvar[1:length(control[["nvars_opts"]])[1]],AUC_df$AUC[(length(control[["nvars_opts"]])[1]+1):dim(AUC_df)[1]],
        pch=2,col="blue",cex=2,lwd=2)
-legend("topleft",c("logistic reg","random forest"),col=c("red","blue"),pch=c(1,2),cex=1.5)
+legend("topleft",c("logistic regression","random forest regression"),col=c("red","blue"),pch=c(1,2),cex=1.5)
 dev.off()
 
 ####################
-#MAL-ED for rederive and external validation
+#Publication - MAL-ED for rederive growth faltering prediction
 ################### define study pop - one obs per diarrhea episode that has b/f and after HAZ and meets criteria ####
-# ontologies <- fread("C://ISASimple_Gates_MAL-ED_0-60m_RSRC_ontologyMetadata.txt")
-# #write.csv(ontologies,"C://ontologies.csv")
-# maled_orig <- fread("C://ISASimple_Gates_MAL-ED_0-60m_RSRC.txt")
+# ontologies <- fread("/ISASimple_Gates_MAL-ED_0-60m_RSRC_ontologyMetadata.txt")
+# #write.csv(ontologies,"/ontologies.csv")
+# maled_orig <- fread("/ISASimple_Gates_MAL-ED_0-60m_RSRC.txt")
 
 # maled_orig_renamed <- rename(maled_orig, c("id"="Participant_Id"))
 # maled_orig_renamed <- rename(maled_orig_renamed, c("hh_id"="Household_Id"))
@@ -4741,12 +6324,13 @@ dev.off()
 
 # temp <- maled_orig_renamed %>% select(id, hh_id, obs_date, diarrhea, first_diar_day, diar_epi_ct, length, HAZ_orig)
 # study_pop <- temp
-# save(study_pop, file = "C://study_pop.Rdata")
-load(file = "C://study_pop.Rdata")
+# save(study_pop, file = "/study_pop.Rdata")
+load(file = "/study_pop.Rdata")
 temp <- study_pop
 
 temp$obs_date_character <- temp$obs_date
 temp$obs_date <- as.Date(temp$obs_date, "%d-%m-%Y") #25-04-2012. run out of memory if do this to the full dataset
+#summary(as.factor(temp$obs_date))
 #drop observations without a date (is <1% of all)
 temp <- temp %>% drop_na(obs_date) #1853368/1870909*100 = 99.1%
 #subset to only observations that are first obs of a diarrhea episode, or have HAZ or both
@@ -4773,21 +6357,36 @@ temp2 <- diar_data %>% rename(diar_date=obs_date,diar_date_character=obs_date_ch
   mutate(diff1=diar_date-HAZ_date,target_date=diar_date+75,diff2=HAZ_date-target_date,diff3=HAZ_date-diar_date) %>% #timeline: haz diar haz. diff1 is first to second, diff3 is second to third, diff2 is target to haz
   group_by(id,diar_date) %>%
   mutate(closest0=diff1==min(diff1[which(diff1>=0)]),closest75=(abs(diff2))==min(abs(diff2)))  %>%
+  #mutate(row=row_number(),closest0=diff1==min(diff1[which(diff1>=0)]),closest75=(abs(diff2))==min(abs(diff2)))  %>%
   filter((closest0==T & diff1<=31) | (closest75==T & diff3>=49 & diff3<=91)) %>%
+    #HAZ1 must be before diar, but no more than 31 days beforehand
+    #HAZ2 is closest to 75 days from start of diar, but has to be w/in 49 and 91 days inclusive
   rename(HAZ=HAZ_orig) %>%
   select(id,hh_id,diar_date,diar_epi_ct,length,HAZ,HAZ_date,target_date,diff1,diff2,diff3,closest0,closest75) %>%
   arrange(id,diar_date,HAZ_date) %>%
   mutate(obs=1:n()) %>% #numbering each observation now that ordered
-  # #examine all the relevant observations for each diarrhea episode that has more than two associated HAZ measurements
-  # test <- temp2 %>% filter(any(obs==3)) #118*3=354
-  # test2 <- test %>% filter(closest75==T)
-  # table(test2$diff3)
-  # #>>> all has to do with two equidistance around HAZ2, so just taking the second one for all
+# table(temp2$obs)
+# # 1    2    3 
+# # 8062 7604  118 
+# #examine all the relevant observations for each diarrhea episode that has more than two associated HAZ measurements
+# test <- temp2 %>% filter(any(obs==3)) #118*3=354
+# test2 <- test %>% filter(closest75==T)
+# table(test2$diff3)
+# #>>> all has to do with two equidistance around HAZ2, so just taking the second one for all
   filter(row_number()==1 | row_number()==n()) %>% #keep first and last obs for each diarrhea episode. 
   #means if there are two HAZ2 equidistance around 75days post diarrhea start, will keep the later one
   mutate(obs=1:n()) %>% #numbering on if is first/second observation for that diarrhea episode
   ungroup 
 length(unique(temp2$id)) #1441/15666
+#this is what want
+# #closest0 production leads to Inf: p_007c8df165091d3b
+# diar_test <- diar_data %>% filter(id=="p_007c8df165091d3b")
+# HAZ_test <- HAZ_data %>% filter(id=="p_007c8df165091d3b")
+# combo_test <- temp1 %>% filter(id=="p_007c8df165091d3b")
+# diar_test <- diar_data %>% filter(id=="p_00933f3d08aef1ce")
+# HAZ_test <- HAZ_data %>% filter(id=="p_00933f3d08aef1ce")
+# combo_test <- temp1 %>% filter(id=="p_00933f3d08aef1ce")
+# #>>> no HAZ measurements for these kids, so will end up dropping anyway
 temp3 <- temp2 %>% pivot_wider(names_from=obs,values_from=c(length,HAZ,HAZ_date,diff1,diff2,diff3,closest0,closest75)) %>% #creating wide data
   filter(!is.na(HAZ_1)&!is.na(HAZ_2)) %>% #dropping obs where no f-up HAZ
   mutate(difHAZ=HAZ_2-HAZ_1) %>%
@@ -4800,41 +6399,59 @@ length(unique(temp3$id)) #1390/6617
 #1 obs for each diar episode. diar_date is the first day of diarrhea for each episode. 
 
 # #manual spot-check
+# diar_test <- diar_data %>% filter(id=="p_041c6ba92b55e570")
+# HAZ_test <- HAZ_data %>% filter(id=="p_041c6ba92b55e570")
+# combo_test <- data %>% filter(id=="p_041c6ba92b55e570")
+# 
+# diar_test <- diar_data %>% filter(id=="p_00c80941c87d98ab")
+# HAZ_test <- HAZ_data %>% filter(id=="p_00c80941c87d98ab")
+# combo_test <- data %>% filter(id=="p_00c80941c87d98ab")
+# 
+# diar_test <- diar_data %>% filter(id=="p_019c47c245dc13cb")
+# HAZ_test <- HAZ_data %>% filter(id=="p_019c47c245dc13cb")
+# combo_test <- data %>% filter(id=="p_019c47c245dc13cb")
 
 ################### observation-level predictors ####
-maled_orig_obs <- fread("C://ISASimple_Gates_MAL-ED_0-60m_RSRC_observations.txt")
+maled_orig_obs <- fread("/ISASimple_Gates_MAL-ED_0-60m_RSRC_observations.txt")
 #subset to only those observations with id's want
 
 #take last obs per diarrhea episode of each of these
 obs_per_episode_last <- maled_orig_obs %>% rename(id="Participant_Id",
-                                                  obs_date="Observation date [EUPATH_0004991]",
-                                                  diarrhea="Study-defined diarrhea [EUPATH_0000665]",
-                                                  first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
-                                                  diar_dur="Diarrheal episode duration (days) [EUPATH_0010238]", #the final total num days of diarrhea in this episode, just take first or last obs of this per episode
-                                                  diar_epi_ct="Cumulative diarrheal episode count [EUPATH_0010478]", #how many episodes have ever had, just need fir or last obs per episode
-                                                  diar_days_sum="Cumulative days within diarrheal episodes [EUPATH_0010480]", #running total num of days of diar across all episodes >>> take last obs from each episode
-                                                  diar_dur_cat="Diarrhea duration categorization [EUPATH_0010495]", #category of how long diarhea lasted in this episode. just need first or last obs per episode
-                                                  diar_GEMS_MSD="Moderate-to-severe diarrhea by GEMS criteria [EUPATH_0010524]", #just need first or last obs per episode
-                                                  loose_stool_max="Max loose stools at episode [EUPATH_0010240]", #is per episode, so just take first or last obs per episode
-                                                  blood="Blood in stool at episode [EUPATH_0010487]",
-                                                  Vesi_Clark_score="Combined Vesikari and Clark severity at episode [EUPATH_0010500]", #is same for all days in episode, just take first or last obs per episode. may still not want to consider since is a combo variable
-                                                  vomit_dur="Days with vomiting at episode [EUPATH_0010486]", #same for entire episode, just take the first of last obs per episode
-                                                  app_dec_dur="Days with decreased appetite at episode [EUPATH_0010489]", #num days of dec app in each episode. just take first or last obs per episode
-                                                  dehyd_max_cat="Max dehydration categorization [EUPATH_0010498]", #seems to be the same for all days in episode, therefore just take first or last obs per episode test1 <- maled_obs_symp %>% group_by(id,diar_epi_ct) %>% filter(diarrhea=="Yes") %>% filter(any(!is.na(dehyd_max_cat)))
-                                                  fev_max="Fever at episode, max temp (C) [EUPATH_0010492]", #the max temp measured per diar episode. just need first or last obs per diarrhea episode
-                                                  fev_bin="Fever at episode categorization [EUPATH_0010499]", #none, mother report, measured confirmed. just need first or last obs per diarrhea
-                                                  ALRI_dur="Cumulative days in this ALRI episode [EUPATH_0010518]", #how long this ALRI episode lasted, is per obs. can be bookended with field worker defined at start and stop, this count continues increasing in-between see id==p_010e6df71b4eafe0. use this at the last day of diarrhea episode as indicator of if and severity of ALRI overlapping w/ diarrhea
+                                            obs_date="Observation date [EUPATH_0004991]",
+                                            diarrhea="Study-defined diarrhea [EUPATH_0000665]",
+                                            first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
+                                            diar_dur="Diarrheal episode duration (days) [EUPATH_0010238]", #the final total num days of diarrhea in this episode, just take first or last obs of this per episode
+                                            diar_epi_ct="Cumulative diarrheal episode count [EUPATH_0010478]", #how many episodes have ever had, just need fir or last obs per episode
+                                            diar_days_sum="Cumulative days within diarrheal episodes [EUPATH_0010480]", #running total num of days of diar across all episodes >>> take last obs from each episode
+                                            diar_dur_cat="Diarrhea duration categorization [EUPATH_0010495]", #category of how long diarhea lasted in this episode. just need first or last obs per episode
+                                            diar_GEMS_MSD="Moderate-to-severe diarrhea by GEMS criteria [EUPATH_0010524]", #just need first or last obs per episode
+                                            loose_stool_max="Max loose stools at episode [EUPATH_0010240]", #is per episode, so just take first or last obs per episode
+                                            blood="Blood in stool at episode [EUPATH_0010487]",
+                                            Vesi_Clark_score="Combined Vesikari and Clark severity at episode [EUPATH_0010500]", #is same for all days in episode, just take first or last obs per episode. may still not want to consider since is a combo variable
+                                            vomit_dur="Days with vomiting at episode [EUPATH_0010486]", #same for entire episode, just take the first of last obs per episode
+                                            app_dec_dur="Days with decreased appetite at episode [EUPATH_0010489]", #num days of dec app in each episode. just take first or last obs per episode
+                                            dehyd_max_cat="Max dehydration categorization [EUPATH_0010498]", #seems to be the same for all days in episode, therefore just take first or last obs per episode test1 <- maled_obs_symp %>% group_by(id,diar_epi_ct) %>% filter(diarrhea=="Yes") %>% filter(any(!is.na(dehyd_max_cat)))
+                                            fev_max="Fever at episode, max temp (C) [EUPATH_0010492]", #the max temp measured per diar episode. just need first or last obs per diarrhea episode
+                                            fev_bin="Fever at episode categorization [EUPATH_0010499]", #none, mother report, measured confirmed. just need first or last obs per diarrhea
+                                            ALRI_dur="Cumulative days in this ALRI episode [EUPATH_0010518]", #how long this ALRI episode lasted, is per obs. can be bookended with field worker defined at start and stop, this count continues increasing in-between see id==p_010e6df71b4eafe0. use this at the last day of diarrhea episode as indicator of if and severity of ALRI overlapping w/ diarrhea
 ) %>%
-  select(id,obs_date,diarrhea,first_diar_day,diar_dur,diar_epi_ct,
-         diar_days_sum,diar_dur_cat,diar_GEMS_MSD,loose_stool_max,
-         blood,Vesi_Clark_score,vomit_dur,app_dec_dur,dehyd_max_cat,
-         fev_max,fev_bin,ALRI_dur)
+select(id,obs_date,diarrhea,first_diar_day,diar_dur,diar_epi_ct,
+       diar_days_sum,diar_dur_cat,diar_GEMS_MSD,loose_stool_max,
+       blood,Vesi_Clark_score,vomit_dur,app_dec_dur,dehyd_max_cat,
+       fev_max,fev_bin,ALRI_dur)
 obs_per_episode_last <- obs_per_episode_last[obs_per_episode_last$id %in% temp3$id,]
 obs_per_episode_last$obs_date_character <- obs_per_episode_last$obs_date
 obs_per_episode_last$obs_date <- as.Date(obs_per_episode_last$obs_date, "%d-%m-%Y") #25-04-2012
 obs_per_episode_last <- obs_per_episode_last %>% arrange(id,obs_date) %>% group_by(id,diar_epi_ct) %>% 
   mutate(diar_start_date=case_when(first_diar_day=="Yes" ~ obs_date)) %>%
+  # table(obs_per_episode_last$first_diar_day,is.na(obs_per_episode_last$diar_start_date))
+  # FALSE    TRUE
+  # No        0 1287453
+  # Yes    8007       0
   fill(diar_start_date) %>% #this fills diar_start_date down rows until next new entry
+  # table(obs_per_episode_last$first_diar_day)
+  # No     Yes 
+  # 1287453    8007 
   filter(diarrhea=="Yes") %>%
   filter(row_number()==n()) %>% #n=8007
   select(-obs_date,-diarrhea,-first_diar_day,-obs_date_character) %>%
@@ -4845,18 +6462,18 @@ obs_per_episode_last <- obs_per_episode_last %>% arrange(id,obs_date) %>% group_
 
 #take the first obs per diar episode of each of these
 obs_per_episode_first <- maled_orig_obs %>% rename(id="Participant_Id",
-                                                   obs_date="Observation date [EUPATH_0004991]",
-                                                   age="Age (days) [EUPATH_0000579]",
-                                                   diarrhea="Study-defined diarrhea [EUPATH_0000665]",
-                                                   first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
-                                                   diar_dur="Diarrheal episode duration (days) [EUPATH_0010238]", #the final total num days of diarrhea in this episode, just take first or last obs of this per episode
-                                                   diar_epi_ct="Cumulative diarrheal episode count [EUPATH_0010478]", #how many episodes have ever had, just need fir or last obs per episode
-                                                   diar_days_since_temp="Days since last diarrheal episode [EUPATH_0010482]", #take the first obs of this from each episode
-                                                   breast_excl="Cumulative days exclusively breastfed [EUPATH_0011014]",
-                                                   breast_not="Cumulative days not breastfed [EUPATH_0011015]",
-                                                   breast_part="Cumulative days partially breastfed [EUPATH_0011017]",
-                                                   breast_predom="Cumulative days predominantly breastfed [EUPATH_0011019]",
-                                                   #>>>breastfeeding variables all seem to be per obs, mutually exclusive, running counts across all episodes. so each observation, one of the four variables increase by 1
+                                             obs_date="Observation date [EUPATH_0004991]",
+                                             age="Age (days) [EUPATH_0000579]",
+                                             diarrhea="Study-defined diarrhea [EUPATH_0000665]",
+                                             first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
+                                             diar_dur="Diarrheal episode duration (days) [EUPATH_0010238]", #the final total num days of diarrhea in this episode, just take first or last obs of this per episode
+                                             diar_epi_ct="Cumulative diarrheal episode count [EUPATH_0010478]", #how many episodes have ever had, just need fir or last obs per episode
+                                             diar_days_since_temp="Days since last diarrheal episode [EUPATH_0010482]", #take the first obs of this from each episode
+                                             breast_excl="Cumulative days exclusively breastfed [EUPATH_0011014]",
+                                             breast_not="Cumulative days not breastfed [EUPATH_0011015]",
+                                             breast_part="Cumulative days partially breastfed [EUPATH_0011017]",
+                                             breast_predom="Cumulative days predominantly breastfed [EUPATH_0011019]",
+                                             #>>>breastfeeding variables all seem to be per obs, mutually exclusive, running counts across all episodes. so each observation, one of the four variables increase by 1
 ) %>%
   select(id,obs_date,age,diarrhea,first_diar_day,diar_dur,diar_epi_ct,
          diar_days_since_temp,breast_excl,breast_not,breast_part,breast_predom)
@@ -4865,8 +6482,16 @@ obs_per_episode_first$obs_date_character <- obs_per_episode_first$obs_date
 obs_per_episode_first$obs_date <- as.Date(obs_per_episode_first$obs_date, "%d-%m-%Y") #25-04-2012
 obs_per_episode_first <- obs_per_episode_first %>% arrange(id,obs_date) %>% group_by(id,diar_epi_ct) %>% 
   mutate(diar_start_date=case_when(first_diar_day=="Yes" ~ obs_date)) %>%
+  # table(obs_per_episode_first$first_diar_day,is.na(obs_per_episode_first$diar_start_date))
+  # FALSE    TRUE
+  # No        0 1287453
+  # Yes    8007       0
   fill(diar_start_date) %>% #this fills diar_start_date down rows until next new entry
+  # table(obs_per_episode_first$first_diar_day)
+  # No     Yes 
+  # 1287453    8007 
   ungroup() %>% #need to ungroup so can do lag for days since last diarrhea, otherwise first obs of each episode blank since no lag obs in that group
+#  mutate(diar_days_since2=case_when(first_diar_day=="Yes" ~ lag(diar_days_since))) %>%
   mutate(diar_days_since=lag(diar_days_since_temp),
          diar_days_since=(case_when(
            is.na(diar_days_since) ~ 0,
@@ -4881,19 +6506,18 @@ obs_per_episode_first <- obs_per_episode_first %>% arrange(id,obs_date) %>% grou
 
 
 #need if any during diar episode 
-#this may be helpful: https://community.rstudio.com/t/setting-a-variable-value-for-the-first-instance-when-a-condition-is-met-within-a-group/34104
 obs_per_episode_any <- maled_orig_obs %>% rename(id="Participant_Id",
-                                                 obs_date="Observation date [EUPATH_0004991]",
-                                                 diarrhea="Study-defined diarrhea [EUPATH_0000665]",
-                                                 first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
-                                                 diar_dur="Diarrheal episode duration (days) [EUPATH_0010238]", #the final total num days of diarrhea in this episode, just take first or last obs of this per episode
-                                                 diar_epi_ct="Cumulative diarrheal episode count [EUPATH_0010478]", #how many episodes have ever had, just need fir or last obs per episode
-                                                 indraw="Indrawing, fieldworker assessment [EUPATH_0010540]", #is per obs. seems to be based on field worker assessment. just have if ever during diarrhea episode
-                                                 activity="Activity level, caregiver report [EUPATH_0010526]", #seems to be per obs. do if any during diar episode
-                                                 abx_caregiverYN="Use of antibiotics, caregiver report [EUPATH_0010530]", #seems to be per obs. use if any Y during diar episode
-                                                 ORT_caregiver="ORT administered, caregiver report [EUPATH_0010536]", #seems to be per obs. use if any during diar episode
-                                                 hosp="Hospitalized [EUPATH_0010995]" #per obs if was hospitalized that day. want ever per diar episode, also want number of days per episode
-                                                 
+                                                   obs_date="Observation date [EUPATH_0004991]",
+                                                   diarrhea="Study-defined diarrhea [EUPATH_0000665]",
+                                                   first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
+                                                   diar_dur="Diarrheal episode duration (days) [EUPATH_0010238]", #the final total num days of diarrhea in this episode, just take first or last obs of this per episode
+                                                   diar_epi_ct="Cumulative diarrheal episode count [EUPATH_0010478]", #how many episodes have ever had, just need fir or last obs per episode
+                                                   indraw="Indrawing, fieldworker assessment [EUPATH_0010540]", #is per obs. seems to be based on field worker assessment. just have if ever during diarrhea episode
+                                                   activity="Activity level, caregiver report [EUPATH_0010526]", #seems to be per obs. do if any during diar episode
+                                                   abx_caregiverYN="Use of antibiotics, caregiver report [EUPATH_0010530]", #seems to be per obs. use if any Y during diar episode
+                                                   ORT_caregiver="ORT administered, caregiver report [EUPATH_0010536]", #seems to be per obs. use if any during diar episode
+                                                   hosp="Hospitalized [EUPATH_0010995]" #per obs if was hospitalized that day. want ever per diar episode, also want number of days per episode
+                                                   
 ) %>%
   select(id,obs_date,diarrhea,first_diar_day,diar_dur,diar_epi_ct,
          indraw,activity,abx_caregiverYN,ORT_caregiver,hosp)
@@ -4902,14 +6526,29 @@ obs_per_episode_any$obs_date_character <- obs_per_episode_any$obs_date
 obs_per_episode_any$obs_date <- as.Date(obs_per_episode_any$obs_date, "%d-%m-%Y") #25-04-2012
 obs_per_episode_any <- obs_per_episode_any %>% arrange(id,obs_date) %>% group_by(id,diar_epi_ct) %>%
   mutate(diar_start_date=case_when(first_diar_day=="Yes" ~ obs_date)) %>%
+  # table(obs_per_episode_any$first_diar_day,is.na(obs_per_episode_any$diar_start_date))
+  # FALSE    TRUE
+  # No        0 1287453
+  # Yes    8007       0
   fill(diar_start_date) %>% #this fills diar_start_date down rows until next new entry
+  # table(obs_per_episode_any$first_diar_day)
+  # No     Yes 
+  # 1287453    8007 
   mutate(indraw_any=case_when((diarrhea=="Yes" & indraw=="Yes") ~ "Yes"),
          sleepy_any=case_when((diarrhea=="Yes" & activity=="Sleepy") ~ "Yes"),
          unawake_any=case_when((diarrhea=="Yes" & activity=="Difficult to awaken") ~ "Yes"),
          abx_any=case_when((diarrhea=="Yes" & abx_caregiverYN=="Yes") ~ "Yes"),
          ORT_any=case_when((diarrhea=="Yes" & ORT_caregiver=="Yes") ~ "Yes"),
          hosp_any=case_when((diarrhea=="Yes" & hosp=="Yes") ~ "Yes")) %>%
+  # id==p_344d8fd5e2527884 (2010-09-12), p_4ed14776c9d156b3 (2013-02-13) for checks for indraw
+  # id==p_00541d8f6796dd38 (2011-03-28) for checks for activity sleepy
+  # id==p_1ac7ab69e73110a0 (2010-10-19) for checks for activity unawake
+  # id==p_00541d8f6796dd38 (2011-03-27) for checks for abx_caregiverYN
+  # id==p_00541d8f6796dd38 (2011-05-26) for checks for ORT_caregiver
+  # id==p_00541d8f6796dd38 (2011-06-04) for checks for hosp
   fill(indraw_any,sleepy_any,unawake_any,abx_any,ORT_any,hosp_any) %>% #fills until end of group, not up. therefore take last obs per group
+  # test <- obs_per_episode_any %>% filter(id=="p_344d8fd5e2527884" | id=="p_4ed14776c9d156b3" |
+  #                                          id=="p_00541d8f6796dd38" | id=="p_1ac7ab69e73110a0")
   filter(diarrhea=="Yes") %>%
   filter(row_number()==n()) %>% #n=8007
   select(-obs_date,-diarrhea,-first_diar_day,-obs_date_character) %>%
@@ -4920,22 +6559,24 @@ obs_per_episode_any <- obs_per_episode_any %>% arrange(id,obs_date) %>% group_by
 
 #these only assessed once a month, rest missing. subset to only the non-missing diet observations, then take join closest diet before diarrhea
 obs_diet_ct <- maled_orig_obs %>% rename(id="Participant_Id",
-                                         obs_date="Observation date [EUPATH_0004991]",
-                                         diarrhea="Study-defined diarrhea [EUPATH_0000665]",
-                                         first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
-                                         meal_ct="Meal count during recall [EUPATH_0011067]",
-                                         dairy_ct="Dairy count [EUPATH_0011074]",
-                                         veg_ct="Dark green leafy vegetable count [EUPATH_0011075]",
-                                         egg_ct="Egg count [EUPATH_0011076]",
-                                         fish_ct="Fish or shellfish count [EUPATH_0011077]",
-                                         legume_ct="Legume count [EUPATH_0011078]",
-                                         meat_ct="Meat count [EUPATH_0011079]",
-                                         fruit_ct="Other fruit or vegetable count [EUPATH_0011080]",
-                                         organ_ct="Organ meat count [EUPATH_0011081]",
-                                         sweet_ct="Sweets count [EUPATH_0011082]",
-                                         diet_score_05="Diet diversity score for children 0 to 5 months [EUPATH_0011625]",
-                                         diet_score_68="Diet diversity score for children 6 to 8 months [EUPATH_0011626]"
-                                         
+                                       obs_date="Observation date [EUPATH_0004991]",
+                                       diarrhea="Study-defined diarrhea [EUPATH_0000665]",
+                                       first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
+                                       #monthly 24-hr food recall up to 24mo, optional extension up to 60mo
+                                       meal_ct="Meal count during recall [EUPATH_0011067]",
+                                       dairy_ct="Dairy count [EUPATH_0011074]",
+                                       veg_ct="Dark green leafy vegetable count [EUPATH_0011075]",
+                                       egg_ct="Egg count [EUPATH_0011076]",
+                                       fish_ct="Fish or shellfish count [EUPATH_0011077]",
+                                       legume_ct="Legume count [EUPATH_0011078]",
+                                       meat_ct="Meat count [EUPATH_0011079]",
+                                       fruit_ct="Other fruit or vegetable count [EUPATH_0011080]",
+                                       organ_ct="Organ meat count [EUPATH_0011081]",
+                                       sweet_ct="Sweets count [EUPATH_0011082]",
+                                       #qualitative diet assessed monthly until 8mo of age. lots missing, not assessed same obs as 24-hr recall so doesn't make sense
+                                       diet_score_05="Diet diversity score for children 0 to 5 months [EUPATH_0011625]",
+                                       diet_score_68="Diet diversity score for children 6 to 8 months [EUPATH_0011626]"
+
 ) %>%
   select(id,obs_date,diarrhea,first_diar_day,
          meal_ct,dairy_ct,veg_ct,egg_ct,fish_ct,legume_ct,
@@ -4945,15 +6586,44 @@ obs_diet_ct$obs_date_character <- obs_diet_ct$obs_date
 obs_diet_ct$obs_date <- as.Date(obs_diet_ct$obs_date, "%d-%m-%Y") #25-04-2012
 obs_diet_ct <- obs_diet_ct %>% filter(!is.na(dairy_ct))
 #each row is an observation of what have. merge based on date and keep if close enough
+# summary(obs_diet_ct)
+# # id               obs_date            diarrhea         first_diar_day        meal_ct           dairy_ct      
+# # Length:1316746     Min.   :2009-10-13   Length:1316746     Length:1316746     Min.   : 0.0      Min.   : 0.0     
+# # Class :character   1st Qu.:2011-09-17   Class :character   Class :character   1st Qu.: 4.0      1st Qu.: 0.0     
+# # Mode  :character   Median :2012-06-06   Mode  :character   Mode  :character   Median : 6.0      Median : 1.0     
+# # Mean   :2012-06-15                                         Mean   : 5.8      Mean   : 1.6     
+# # 3rd Qu.:2013-02-26                                         3rd Qu.: 7.0      3rd Qu.: 3.0     
+# # Max.   :2017-04-14                                         Max.   :20.0      Max.   :15.0     
+# # NA's   :1289289   NA's   :1286727  
+# # veg_ct            egg_ct           fish_ct          legume_ct          meat_ct           fruit_ct      
+# # Min.   :0.0       Min.   :0.0       Min.   :0.0       Min.   :0.0       Min.   :0.0       Min.   : 0.0     
+# # 1st Qu.:0.0       1st Qu.:0.0       1st Qu.:0.0       1st Qu.:0.0       1st Qu.:0.0       1st Qu.: 1.0     
+# # Median :0.0       Median :0.0       Median :0.0       Median :1.0       Median :0.0       Median : 2.0     
+# # Mean   :0.3       Mean   :0.3       Mean   :0.2       Mean   :1.2       Mean   :0.6       Mean   : 2.3     
+# # 3rd Qu.:0.0       3rd Qu.:1.0       3rd Qu.:0.0       3rd Qu.:2.0       3rd Qu.:1.0       3rd Qu.: 3.0     
+# # Max.   :6.0       Max.   :6.0       Max.   :6.0       Max.   :9.0       Max.   :6.0       Max.   :14.0     
+# # NA's   :1286727   NA's   :1286727   NA's   :1286727   NA's   :1286727   NA's   :1286727   NA's   :1286727  
+# # organ_ct          sweet_ct       diet_score_05     diet_score_68     obs_date_character
+# # Min.   :0.0       Min.   :0.0       Min.   :0.0       Min.   :1         Length:1316746    
+# # 1st Qu.:0.0       1st Qu.:0.0       1st Qu.:3.0       1st Qu.:4         Class :character  
+# # Median :0.0       Median :0.0       Median :4.0       Median :4         Mode  :character  
+# # Mean   :0.1       Mean   :0.7       Mean   :3.4       Mean   :4                           
+# # 3rd Qu.:0.0       3rd Qu.:1.0       3rd Qu.:4.0       3rd Qu.:4                           
+# # Max.   :6.0       Max.   :8.0       Max.   :4.0       Max.   :6                           
+# # NA's   :1286727   NA's   :1286727   NA's   :1309879   NA's   :1312678  
+# table(is.na(obs_diet_ct$dairy_ct)&is.na(obs_diet_ct$veg_ct))
+# # FALSE    TRUE 
+# # 30019 1286727
 #>>> food count variables mostly missing for the same observations, just drop based on missing for one of them
 
 obs_diet_score <- maled_orig_obs %>% rename(id="Participant_Id",
-                                            obs_date="Observation date [EUPATH_0004991]",
-                                            diarrhea="Study-defined diarrhea [EUPATH_0000665]",
-                                            first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
-                                            diet_score_05="Diet diversity score for children 0 to 5 months [EUPATH_0011625]",
-                                            diet_score_68="Diet diversity score for children 6 to 8 months [EUPATH_0011626]"
-                                            
+                                         obs_date="Observation date [EUPATH_0004991]",
+                                         diarrhea="Study-defined diarrhea [EUPATH_0000665]",
+                                         first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
+                                         #qualitative diet assessed monthly until 8mo of age. lots missing, not assessed same obs as 24-hr recall so doesn't make sense
+                                         diet_score_05="Diet diversity score for children 0 to 5 months [EUPATH_0011625]",
+                                         diet_score_68="Diet diversity score for children 6 to 8 months [EUPATH_0011626]"
+                                         
 ) %>%
   select(id,obs_date,diarrhea,first_diar_day,
          diet_score_05,diet_score_68)
@@ -4970,6 +6640,7 @@ obs_resp <- maled_orig_obs %>% rename(id="Participant_Id",
                                       first_diar_day="1st day of diarrheal episode [EUPATH_0010473]", #Yes/No
                                       diar_dur="Diarrheal episode duration (days) [EUPATH_0010238]", #the final total num days of diarrhea in this episode, just take first or last obs of this per episode
                                       diar_epi_ct="Cumulative diarrheal episode count [EUPATH_0010478]", #how many episodes have ever had, just need fir or last obs per episode
+                                      #GEMS: fever of at least 38C or parental perception
                                       resp1="Respiratory rate (breaths/min) [CMO_0000289]", #is per obs
                                       resp2="Respiratory rate (breaths/min), 2nd [EUPATH_0010097]", #is per obs
                                       
@@ -4981,12 +6652,24 @@ obs_resp <- obs_resp[obs_resp$id %in% temp3$id,]
 obs_resp$obs_date_character <- obs_resp$obs_date
 obs_resp$obs_date <- as.Date(obs_resp$obs_date, "%d-%m-%Y") #25-04-2012
 #cleaning symptoms so can symplify
+# table(is.na(obs_resp$resp1),is.na(obs_resp$resp2))
+# # FALSE    TRUE
+# # FALSE   42846       4
+# # TRUE        0 1273896
 obs_resp$resp <- ifelse((is.na(obs_resp$resp1) & !is.na(obs_resp$resp2)),obs_resp$resp2,
                         ifelse((!is.na(obs_resp$resp1) & is.na(obs_resp$resp2)),obs_resp$resp1,
                                ifelse((!is.na(obs_resp$resp1) & !is.na(obs_resp$resp2)),((obs_resp$resp1 + obs_resp$resp2)/2),
                                       NA)))
+# table(is.na(obs_resp$resp))
+# # FALSE    TRUE 
+# # 42850 1273896 
 obs_resp <- obs_resp %>% filter(!is.na(resp) & diarrhea=="Yes") %>% select(-obs_date_character,-resp1,-resp2) %>%
-  # #are there multiple resp observations per diarrhea episode?
+    # #are there multiple resp observations per diarrhea episode?
+    # test2 <- obs_resp %>% group_by(id,diar_epi_ct) %>% mutate(ct=1:n())
+    # table(test2$ct)
+    # # 1    2    3    4    5 
+    # # 1613  375   73   14    4 
+    # test3 <- test2 %>% filter(any(ct>1))
   group_by(id,diar_epi_ct) %>% mutate(avg_resp=mean(resp)) %>% #want an average resp rate per diarrhea episode
   filter(row_number()==n()) %>% #only need 1 obs per diar episode
   ungroup()
@@ -4996,12 +6679,46 @@ obs_resp <- obs_resp %>% filter(!is.na(resp) & diarrhea=="Yes") %>% select(-obs_
 #merging observation-level observations that have been wrangled back into full analytic dataset
 #merge these by diarrhea episode
 temp4 <- temp3 %>% left_join(obs_per_episode_last,by=c("id","diar_epi_ct"))
+# table(temp3$diar_date==temp3$diar_start_date)
+# # TRUE 
+# # 6617
+# test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+# table(test2$ct)
+# 1 
+# 6617 
 temp5 <- temp4 %>% left_join(obs_per_episode_first,by=c("id","diar_epi_ct")) %>%
   select(-diar_dur.y,-diar_start_date.y) %>% rename(diar_dur="diar_dur.x", diar_start_date="diar_start_date.x")
+# table(temp3$diar_date==temp3$diar_start_date.y)
+# # TRUE 
+# # 6617 
+# test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+# table(test2$ct)
+# 1 
+# 6617 
+# table(test$diar_dur.x==test$diar_dur.y)
+# # TRUE 
+# # 6617 
+# table(test$diar_start_date.x==test$diar_start_date.y)
+# # TRUE 
+# # 6617 
 temp6 <- temp5 %>% left_join(obs_per_episode_any,by=c("id","diar_epi_ct")) %>%
   select(-diar_dur.y,-diar_start_date.y) %>% rename(diar_dur="diar_dur.x", diar_start_date="diar_start_date.x")
+# test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+# table(test2$ct)
+# 1 
+# 6617 
+# table(test$diar_dur.x==test$diar_dur.y)
+# # TRUE 
+# # 6617 
+# table(test$diar_start_date.x==test$diar_start_date.y)
+# # TRUE 
+# # 6617 
 temp7 <- temp6 %>% left_join(obs_resp,by=c("id","diar_epi_ct")) %>%
   select(-diar_dur.y,-obs_date) %>% rename(diar_dur="diar_dur.x")
+# test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+# table(test2$ct)
+# # 1
+# # 6617
 
 
 #merge these by closest date within some threshold
@@ -5010,29 +6727,68 @@ temp8 <- temp7 %>% left_join(obs_diet_ct,by="id") %>%
   group_by(id,diar_date) %>%
   mutate(row=row_number(),closest0=(obs_diff_diet_ct==min(obs_diff_diet_ct))) %>%
   filter(closest0==T | is.na(closest0)) %>% #want to keep observations for which diet is closest or no diet info for that id. all remaining duplicates are when multiple diet obs equidistance from start of diarrhea, want the earlier diet obs 
+    # test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+    # table(test2$ct)
+    # # 1    2 
+    # # 6617   63 
+    # test3 <- test2 %>% filter(any(ct>1))
+    # table(test3$closest0)
+    # # TRUE 
+    # # 126
   arrange(id,diar_date,obs_date) %>%
   group_by(id,diar_epi_ct) %>%
   mutate(ct=1:n()) %>% #ct for each time the same diar_epi_ct used by the same child for different diet observations
+    # test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+    # table(test2$ct)
+    # # 1    2 
+    # # 6617   63
+    # test3 <- test2 %>% filter(any(ct>1))
+    # table(test3$closest0)
+    # # TRUE 
+    # # 126
   filter(row_number()==1) %>% #only want the first use of each diet obs for each diarrhea episode
   ungroup %>% rename(obs_date_diet_ct="obs_date") %>% 
   select(-obs_date_character,-row,-closest0,-ct) #drop variables don't need/don't make sense anymore
+# test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+# table(test2$ct)
+
 
 temp9 <- temp8 %>% left_join(obs_diet_score,by="id") %>%
   mutate(obs_diff_diet_score=abs(diar_date-obs_date)) %>%
   group_by(id,diar_date) %>%
   mutate(row=row_number(),closest0=(obs_diff_diet_score==min(obs_diff_diet_score))) %>%
   filter(closest0==T | is.na(closest0)) %>% #want to keep observations for which diet is closest or no diet info for that id. all remaining duplicates are when multiple diet obs equidistance from start of diarrhea, want the earlier diet obs 
+    # test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+    # table(test2$ct)
+    # # 1    2
+    # # 6617   24
+    # test3 <- test2 %>% filter(any(ct>1))
+    # table(test3$closest0)
+    # # TRUE
+    # # 48
   arrange(id,diar_date,obs_date) %>%
   group_by(id,diar_epi_ct) %>%
   mutate(ct=1:n()) %>% #ct for each time the same diar_epi_ct used by the same child for different diet observations
+    # test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+    # table(test2$ct)
+    # # 1    2
+    # # 6617   24
+    # test3 <- test2 %>% filter(any(ct>1))
+    # table(test3$closest0)
+    # # TRUE
+    # # 48
   filter(row_number()==1) %>% #only want the first use of each diet obs for each diarrhea episode
   ungroup %>% rename(obs_date_diet_score="obs_date") %>% 
   select(-first_diar_day.x,-first_diar_day.y,-row,-closest0,-ct,-obs_date_character) #drop variables that don't mean anything anymore
+    # test2 <- test %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+    # table(test2$ct)
+    # # 1 
+    # # 6617 
 
 
 ################### person-level predictors ####
 #participant variables want as predictors, start cleaning those and will need to merge to this data
-maled_orig_ppl <- fread("C://ISASimple_Gates_MAL-ED_0-60m_RSRC_participants.txt")
+maled_orig_ppl <- fread("/ISASimple_Gates_MAL-ED_0-60m_RSRC_participants.txt")
 
 maled_ppl <- maled_orig_ppl %>% rename(id="Participant_Id",
                                        breast_24="Breastfed within 1st 24hrs [EUPATH_0011009]",
@@ -5047,11 +6803,12 @@ maled_ppl <- maled_orig_ppl %>% rename(id="Participant_Id",
 maled_ppl <- maled_ppl[maled_ppl$id %in% temp3$id,] #2145 to 1390 which is what want. this step probably superfluous w/ left-join
 #dim(unique(maled_ppl)) #no repeates
 temp10 <- temp9 %>% left_join(maled_ppl,by="id")
+length(unique(temp10$id)) #1390/6617
 
 
 ################### HH-level predictors ####
 #HH variables want as potential predictors, start cleaning those and will need to merge to this data
-maled_orig_hh <- fread("C://ISASimple_Gates_MAL-ED_0-60m_RSRC_households.txt")
+maled_orig_hh <- fread("/ISASimple_Gates_MAL-ED_0-60m_RSRC_households.txt")
 
 maled_orig_hh_renamed <- maled_orig_hh %>% rename(hh_id="Household_Id",
                                                   hh_date="Household data collection date [EUPATH_0021085]",
@@ -5105,11 +6862,15 @@ maled_hh <- maled_orig_hh_renamed %>% select(hh_id,hh_date_character,hh_date,cou
                                              two_ppl_rm,sani,sani_concrete,sani_type,latrine_current,
                                              latrine_previous)
 #are multiple observations per household.
+# length(unique(maled_hh$hh_id))
+# [1] 2145
 #observations with country recorded don't have any other info recorded
 maled_hh_country <- maled_hh %>% select(hh_id,country) %>% filter(!is.na(country)) 
 #rest of the other observations, no longer need country
 #if water_source missing, everything but food insecurity Q's are also missing, so drop those observations
 maled_hh_repeated <- maled_hh %>% select(-country) %>% filter(!is.na(hh_date)&!(is.na(water_source)))
+# test<-maled_hh_repeated %>% filter(is.na(water_source))
+# str(test)
 
 #for hh variables that repeated, selected closest date
 temp11 <- temp10 %>% 
@@ -5118,258 +6879,207 @@ temp11 <- temp10 %>%
   group_by(id,diar_date) %>%
   mutate(row=row_number(),closest=(hh_diff==min(hh_diff)))  %>% #1390 uniq at this step length(unique(temp3$id)); this row labels each observation as T/F is it the row with the smallest difference in dates
   filter(closest==T | is.na(closest)) %>% ##1390 uniq at this step length(unique(temp3$id)). are some diar episodes for which are two equidistance HH observations from either side
+    # test1 <- temp11 %>% mutate(ct=1:n()) %>% filter(any(ct>1)) %>% select(id,hh_id,diar_date,diar_epi_ct,ct)
+    # table(test1$ct)
+    # # 1  2 
+    # # 15 15
   arrange(id,diar_date,hh_date) %>%
   group_by(id,diar_epi_ct) %>%
   mutate(ct=1:n()) %>% #ct for each time the same diar_epi_ct used by the same child for different HH observations
+  # test1 <- temp11 %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+  # table(test1$ct)
+  # # 1    2
+  # # 6617   15
+  # test2 <- test1 %>% filter(any(ct>1))
+  # table(test2$closest)
+  # # TRUE
+  # # 30
   filter(row_number()==1) %>% #only want the first use of each HH obs for each diarrhea episode
   ungroup %>% select(-diarrhea.x,-diarrhea.y,-row,-closest,-ct)
 length(unique(temp11$id)) #1390
+# test <- temp11 %>% group_by(id,diar_date) %>% mutate(ct=1:n()) #also grouped by (id,diar_epi_ct)
+# table(test$ct)
 
 #add country
 temp12 <- temp11 %>% left_join(maled_hh_country,by="hh_id")
 length(unique(temp12$id)) #1390/6617
 
 unclean_analytic <- temp12
-#save(unclean_analytic, file = "C://unclean_analytic.Rdata")
+#save(unclean_analytic, file = "/unclean_analytic.Rdata")
 
 
 ################### START here for analysis: analytic file, define variables ####
-load(file = "C://unclean_analytic.Rdata")
+load(file = "/unclean_analytic.Rdata")
 temp1 <- unclean_analytic
 #this is an observation for each case of diarrhea. kids with multiple distinct episodes of diarrhea are in here multiple times
 
 #create 0.5HAZ outcome variable
 temp2 <- temp1 %>% mutate(HAZ_dif=HAZ_1 - HAZ_2, #in GEMS: haz_dif = f4b_haz - f5_haz
-                          haz_0.5=(case_when(HAZ_dif>=0.5 ~ 1, TRUE~0)),
-                          haz_1.0=(case_when(HAZ_dif>=1.0 ~ 1, TRUE~0)))
+  haz_0.5=(case_when(HAZ_dif>=0.5 ~ 1, TRUE~0)),
+  haz_1.0=(case_when(HAZ_dif>=1.0 ~ 1, TRUE~0)))
+#cbind(test$HAZ_1,test$HAZ_2,test$HAZ_dif,test$haz_0.5)
 
 temp3<-temp2
 #convert these to factors
 vars <- c("diar_GEMS_MSD","blood","country","breast_24",
           "colostrum","prelacteal","sex","roof","floor",
           "wall","kitchen","edu2","two_ppl_rm"
-)
+          )
 temp3[vars] <- lapply(temp3[vars], factor)
 
 #going from categories to ordinal (linear numeric)
-#remember case_when default if not satisfied is NA
+  #remember case_when default if not satisfied is NA
 temp4 <- temp3 %>% mutate(diar_dur_cat=(case_when(
-  diar_dur_cat=="0 points - 0-1 day" ~ 0,
-  diar_dur_cat=="1 point - 2-4 days" ~ 1,
-  diar_dur_cat=="2 points - 5-7 days" ~ 2,
-  diar_dur_cat=="3 points - 8+ days" ~ 3)),
-  dehyd_max_cat=(case_when(
-    dehyd_max_cat=="0 points - No dehydration" ~ 0,
-    dehyd_max_cat=="2 points - Some dehydration" ~ 1,
-    dehyd_max_cat=="3 points - Severe dehydration" ~ 2)),
-  fev_bin=(case_when(
-    fev_bin=="0 points - No fever reported" ~ 0,
-    fev_bin=="1 point - Mother reported fever" ~ 1,
-    fev_bin=="2 points - Fever >37.5C confirmed by field worker" ~ 2)),
-  ALRI_dur=(case_when(
-    is.na(ALRI_dur) ~ 0,
-    TRUE ~ as.numeric(ALRI_dur))),
-  time_to_breast=(case_when(
-    time_to_breast=="1. Within 1 hour" ~ 0,
-    time_to_breast=="2. 1 hour to 24 hours" ~ 1,
-    time_to_breast=="3. 1 day to 3 days" ~ 2,
-    time_to_breast=="4. 4+ days" ~ 3)),
-  water_source=(case_when(
-    water_source=="Unimproved: surface water (river, dam, lake, pond, stream, canal, or irrigation canal)" ~ 0,
-    water_source=="Unimproved: unprotected well (dug well that is unprotected from runoff water and/or unprotected from bird droppings and animals)" ~ 0,
-    is.na(water_source)~as.numeric(NA),
-    TRUE ~ 1)),
-  sani_score=(case_when(
-    sani_score=="0 points - Unimproved" ~ 0,
-    sani_score=="4 points - Improved" ~ 1,
-    is.na(sani_score)~as.numeric(NA))),
-  water_score=(case_when(
-    water_score=="0 points - Unimproved" ~ 0,
-    water_score=="4 points - Improved" ~ 1,
-    is.na(water_score)~as.numeric(NA))),
-  food_24wo=(case_when(
-    food_24wo=="0 points - No" ~ 0,
-    food_24wo=="1 point - Rarely" ~ 1,
-    food_24wo=="2 points - Sometimes" ~ 2,
-    food_24wo=="3 points - Often" ~ 3,
-    is.na(food_24wo)~as.numeric(NA))),
-  food_not_want=(case_when(
-    food_not_want=="0 points - No" ~ 0,
-    food_not_want=="1 point - Rarely" ~ 1,
-    food_not_want=="2 points - Sometimes" ~ 2,
-    food_not_want=="3 points - Often" ~ 3,
-    is.na(food_not_want)~as.numeric(NA))),
-  food_not_able=(case_when(
-    food_not_able=="0 points - No" ~ 0,
-    food_not_able=="1 point - Rarely" ~ 1,
-    food_not_able=="2 points - Sometimes" ~ 2,
-    food_not_able=="3 points - Often" ~ 3,
-    is.na(food_not_able)~as.numeric(NA))),
-  food_fewer=(case_when(
-    food_fewer=="0 points - No" ~ 0,
-    food_fewer=="1 point - Rarely" ~ 1,
-    food_fewer=="2 points - Sometimes" ~ 2,
-    food_fewer=="3 points - Often" ~ 3,
-    is.na(food_fewer)~as.numeric(NA))),
-  sleep_hungry=(case_when(
-    sleep_hungry=="0 points - No" ~ 0,
-    sleep_hungry=="1 point - Rarely" ~ 1,
-    sleep_hungry=="2 points - Sometimes" ~ 2,
-    sleep_hungry=="3 points - Often" ~ 3,
-    is.na(sleep_hungry)~as.numeric(NA))),
-  food_variety=(case_when(
-    food_variety=="0 points - No" ~ 0,
-    food_variety=="1 point - Rarely" ~ 1,
-    food_variety=="2 points - Sometimes" ~ 2,
-    food_variety=="3 points - Often" ~ 3,
-    is.na(food_variety)~as.numeric(NA))),
-  food_none=(case_when(
-    food_none=="0 points - No" ~ 0,
-    food_none=="1 point - Rarely" ~ 1,
-    food_none=="2 points - Sometimes" ~ 2,
-    food_none=="3 points - Often" ~ 3,
-    is.na(food_none)~as.numeric(NA))),
-  food_worried=(case_when(
-    food_worried=="0 points - No" ~ 0,
-    food_worried=="1 point - Rarely" ~ 1,
-    food_worried=="2 points - Sometimes" ~ 2,
-    food_worried=="3 points - Often" ~ 3,
-    is.na(food_worried)~as.numeric(NA))),
-  food_small=(case_when(
-    food_small=="0 points - No" ~ 0,
-    food_small=="1 point - Rarely" ~ 1,
-    food_small=="2 points - Sometimes" ~ 2,
-    food_small=="3 points - Often" ~ 3,
-    is.na(food_small)~as.numeric(NA))),
-  sani=(case_when(
-    sani=="No facility" ~ 0,
-    sani=="Pit latrine or flush toilet" ~ 1,
-    is.na(sani)~as.numeric(NA))),
-  sani_type=(case_when(
-    sani_type=="Unimproved: no facility, bush, field, or bucket toilet" ~ 0,
-    is.na(sani_type)~as.numeric(NA),
-    TRUE~1)))
-
+                    diar_dur_cat=="0 points - 0-1 day" ~ 0,
+                    diar_dur_cat=="1 point - 2-4 days" ~ 1,
+                    diar_dur_cat=="2 points - 5-7 days" ~ 2,
+                    diar_dur_cat=="3 points - 8+ days" ~ 3)),
+                  dehyd_max_cat=(case_when(
+                    dehyd_max_cat=="0 points - No dehydration" ~ 0,
+                    dehyd_max_cat=="2 points - Some dehydration" ~ 1,
+                    dehyd_max_cat=="3 points - Severe dehydration" ~ 2)),
+                  fev_bin=(case_when(
+                    fev_bin=="0 points - No fever reported" ~ 0,
+                    fev_bin=="1 point - Mother reported fever" ~ 1,
+                    fev_bin=="2 points - Fever >37.5C confirmed by field worker" ~ 2)),
+                  ALRI_dur=(case_when(
+                    is.na(ALRI_dur) ~ 0,
+                    TRUE ~ as.numeric(ALRI_dur))),
+                  time_to_breast=(case_when(
+                    time_to_breast=="1. Within 1 hour" ~ 0,
+                    time_to_breast=="2. 1 hour to 24 hours" ~ 1,
+                    time_to_breast=="3. 1 day to 3 days" ~ 2,
+                    time_to_breast=="4. 4+ days" ~ 3)),
+                  water_source=(case_when(
+                    water_source=="Unimproved: surface water (river, dam, lake, pond, stream, canal, or irrigation canal)" ~ 0,
+                    water_source=="Unimproved: unprotected well (dug well that is unprotected from runoff water and/or unprotected from bird droppings and animals)" ~ 0,
+                    #is.na(water_source)~99,
+                    is.na(water_source)~as.numeric(NA),
+                    TRUE ~ 1)),
+                  sani_score=(case_when(
+                    sani_score=="0 points - Unimproved" ~ 0,
+                    sani_score=="4 points - Improved" ~ 1,
+                    is.na(sani_score)~as.numeric(NA))),
+                  water_score=(case_when(
+                    water_score=="0 points - Unimproved" ~ 0,
+                    water_score=="4 points - Improved" ~ 1,
+                    is.na(water_score)~as.numeric(NA))),
+                  food_24wo=(case_when(
+                    food_24wo=="0 points - No" ~ 0,
+                    food_24wo=="1 point - Rarely" ~ 1,
+                    food_24wo=="2 points - Sometimes" ~ 2,
+                    food_24wo=="3 points - Often" ~ 3,
+                    is.na(food_24wo)~as.numeric(NA))),
+                  food_not_want=(case_when(
+                    food_not_want=="0 points - No" ~ 0,
+                    food_not_want=="1 point - Rarely" ~ 1,
+                    food_not_want=="2 points - Sometimes" ~ 2,
+                    food_not_want=="3 points - Often" ~ 3,
+                    is.na(food_not_want)~as.numeric(NA))),
+                  food_not_able=(case_when(
+                    food_not_able=="0 points - No" ~ 0,
+                    food_not_able=="1 point - Rarely" ~ 1,
+                    food_not_able=="2 points - Sometimes" ~ 2,
+                    food_not_able=="3 points - Often" ~ 3,
+                    is.na(food_not_able)~as.numeric(NA))),
+                  food_fewer=(case_when(
+                    food_fewer=="0 points - No" ~ 0,
+                    food_fewer=="1 point - Rarely" ~ 1,
+                    food_fewer=="2 points - Sometimes" ~ 2,
+                    food_fewer=="3 points - Often" ~ 3,
+                    is.na(food_fewer)~as.numeric(NA))),
+                  sleep_hungry=(case_when(
+                    sleep_hungry=="0 points - No" ~ 0,
+                    sleep_hungry=="1 point - Rarely" ~ 1,
+                    sleep_hungry=="2 points - Sometimes" ~ 2,
+                    sleep_hungry=="3 points - Often" ~ 3,
+                    is.na(sleep_hungry)~as.numeric(NA))),
+                  food_variety=(case_when(
+                    food_variety=="0 points - No" ~ 0,
+                    food_variety=="1 point - Rarely" ~ 1,
+                    food_variety=="2 points - Sometimes" ~ 2,
+                    food_variety=="3 points - Often" ~ 3,
+                    is.na(food_variety)~as.numeric(NA))),
+                  food_none=(case_when(
+                    food_none=="0 points - No" ~ 0,
+                    food_none=="1 point - Rarely" ~ 1,
+                    food_none=="2 points - Sometimes" ~ 2,
+                    food_none=="3 points - Often" ~ 3,
+                    is.na(food_none)~as.numeric(NA))),
+                  food_worried=(case_when(
+                    food_worried=="0 points - No" ~ 0,
+                    food_worried=="1 point - Rarely" ~ 1,
+                    food_worried=="2 points - Sometimes" ~ 2,
+                    food_worried=="3 points - Often" ~ 3,
+                    is.na(food_worried)~as.numeric(NA))),
+                  food_small=(case_when(
+                    food_small=="0 points - No" ~ 0,
+                    food_small=="1 point - Rarely" ~ 1,
+                    food_small=="2 points - Sometimes" ~ 2,
+                    food_small=="3 points - Often" ~ 3,
+                    is.na(food_small)~as.numeric(NA))),
+                  sani=(case_when(
+                    sani=="No facility" ~ 0,
+                    sani=="Pit latrine or flush toilet" ~ 1,
+                    is.na(sani)~as.numeric(NA))),
+                  sani_type=(case_when(
+                    sani_type=="Unimproved: no facility, bush, field, or bucket toilet" ~ 0,
+                    is.na(sani_type)~as.numeric(NA),
+                    TRUE~1)))
+              
 #set missing to no, becomes numeric 0/1
 temp5 <- temp4 %>% mutate(across(c(indraw_any,sleepy_any,unawake_any,
-                                   abx_any,ORT_any,hosp_any,
-                                   bed,tv,fridge,table,chair,
-                                   bank,sani_concrete),
-                                 ~ case_when(is.na(.) ~ 0,
-                                             .=="No" ~ 0,
-                                             .=="Yes" ~ 1)))
+                                 abx_any,ORT_any,hosp_any,
+                                 bed,tv,fridge,table,chair,
+                                 bank,sani_concrete),
+                               ~ case_when(is.na(.) ~ 0,
+                                           .=="No" ~ 0,
+                                           .=="Yes" ~ 1)))
+# test <- data %>% mutate(indraw_any_test=(case_when(
+#                     is.na(indraw_any) ~ 0,
+#                     indraw_any=="Yes" ~ 1)))
 
 #diet_score_05, diet_score_68 - only eligible for one of these based on age, combine into a single var based on age at that diarrhea episode
 temp6 <- temp5 %>% mutate(diet_score=(case_when(
-  is.na(diet_score_05) & is.na(diet_score_68) ~ as.numeric(NA),
-  !is.na(diet_score_05) & is.na(diet_score_68) ~ as.numeric(diet_score_05),
-  is.na(diet_score_05) & !is.na(diet_score_68) ~ as.numeric(diet_score_68))))
+                      is.na(diet_score_05) & is.na(diet_score_68) ~ as.numeric(NA),
+                      !is.na(diet_score_05) & is.na(diet_score_68) ~ as.numeric(diet_score_05),
+                      is.na(diet_score_05) & !is.na(diet_score_68) ~ as.numeric(diet_score_68))))
+# table(is.na(data$diet_score_05),is.na(data$diet_score_68))
+# # FALSE TRUE
+# # FALSE     0 1240
+# # TRUE   5377    0
 
 #create a single combined breastfeeding variable
 #these four variables are number of days since brith that exclusive/predominant/partial/no breastfeeding.
 #assume more is always better, assign points for each
 temp6.2 <- temp6 %>% mutate(breast_totdays=(breast_excl*1)+(breast_predom*0.75)+(breast_part*0.5)+(breast_not*0))
-
-
-# #keep linear
-# diar_dur
-# diar_days_sum
-# diar_days_since
-# loose_stool_max
-# Vesi_Clark_score - has missing.1==least severe, 14==most severe
-# vomit_dur
-# app_dec_dur
-# fev_max - has lots missing, probably end up not using
-# age
-# breast_excl
-# breast_not
-# breast_part
-# breast_predom
-# breast_totdays (combo of above 4)
-# avg_resp - has lots of missing, probably end up not using
-# meal_ct - has some missing; these diet Qs all missing the same few
-# dairy_ct
-# veg_ct
-# egg_ct
-# fish_ct
-# legume_ct
-# meat_ct
-# fruit_ct
-# organ_ct
-# sweet_ct
-# wealth_index - some missing
-# ppl_slp - some missing
-# mean_ppl - some missing
-# tot_diar
-# edu - some missing
-# rm_ct - some missing
-# income_score - some missing
-# sani_water_score - some missing
-# 
-# #factor
-# diar_GEMS_MSD
-# blood
-# country
-# breast_24
-# colostrum
-# prelacteal
-# sex
-# 
-# #redefine then factor
-# diar_dur_cat
-# dehyd_max_cat
-# fev_bin - has missing
-# ALRI_dur - redefine to no ALRI(missing), then categorize
-# indraw_any - set missing to no
-# sleepy_any - set missing to no
-# unawake_any - set missing to no
-# abx_any - set missing to no
-# ORT_any - set missing to no
-# hosp_any - set missing to no
-# diet_score_05, diet_score_68 - only eligible for one of these based on age, combine into a single var based on age at that diarrhea episode
-# time_to_breast - some missing
-# water_source - some missing
-# sani_score - some missing
-# water_score - some missing
-# bed - some missing
-# tv - some missing
-# fridge - some missing
-# table - some missing
-# chair - some missing
-# roof - some missing
-# floor - some missing
-# wall - some missing
-# bank - some missing
-# #food assessed every 6 mo from 0-24mo, then optional at 30 and 36 mo
-# food_24wo - missing lots but maybe not eligible
-# food_not_want - missing lots but maybe not eligible
-# food_not_able - missing lots but maybe not eligible
-# food_fewer - missing lots but maybe not eligible
-# sleep_hungry - missing lots but maybe not eligible
-# food_variety - missing lots but maybe not eligible
-# food_none - missing lots but maybe not eligible
-# food_worried - missing lots but maybe not eligible
-# food_small - missing lots but maybe not eligible
-# kitchen - Y/N has missing
-# edu2 - Y/N has missing
-# two_ppl_rm - Y/N has missing
-# sani
-# sani_concrete
-# sani_type
-# latrine_current
-# latrine_previous
+#cbind(temp6.2$test,temp6.2$breast_excl,temp6.2$breast_predom,temp6.2$breast_part,temp6.2$breast_not)
 
 
 ################### inclusion/exclusion for growth faltering ####
 #look at dates for each merge, makes sure things are within an acceptable date range
 #if diet info was collected >=90 days from start of diarrhea, then set diet info to missing (no diet info available from close enough date)
 temp7 <- temp6.2 %>% mutate(across(c(meal_ct,dairy_ct,veg_ct,
-                                     egg_ct,fish_ct,legume_ct,
-                                     meat_ct,fruit_ct,organ_ct,sweet_ct),
-                                   ~ifelse(as.numeric(obs_diff_diet_ct)>=90,NA,.)))
+                                   egg_ct,fish_ct,legume_ct,
+                                   meat_ct,fruit_ct,organ_ct,sweet_ct),
+                                 ~ifelse(as.numeric(obs_diff_diet_ct)>=90,NA,.)))
+# temp7$obs_diff_diet_ct[1:15]
+# # Time differences in days
+# # [1] 224 147  91 213 176 127 117  91  30  12   1  10   1   7  11
+# temp6$meal_ct[1:15]
+# # [1] 5 5 5 5 5 5 5 5 5 5 4 5 6 4 4
+# temp7$meal_ct[1:15]
+# #[1] NA NA  5 NA NA NA NA  5  5  5  4  5  6  4  4
 
 temp8 <- temp7 %>% mutate(across(c(diet_score),
                                  ~ifelse(as.numeric(obs_diff_diet_score)>=90,NA,.)))
+# temp8$obs_diff_diet_score[1:15]
+# # Time differences in days
+# # [1]   7  10   7   2   8   4   6   2   2  44  91 111 153 206 224
+# temp7$diet_score[1:15]
+# # [1] 4 3 5 2 2 3 3 4 4 4 4 4 4 4 4
+# temp8$diet_score[1:15]
+# #[1] 4  3  5  2  2  3  3  4  4  4 NA NA NA NA NA
 
 #if HH info more than 6 months old then missing
 temp9 <- temp8 %>% mutate(across(c(water_source,wealth_index,
@@ -5386,6 +7096,13 @@ temp9 <- temp8 %>% mutate(across(c(water_source,wealth_index,
                                    sani_type,latrine_current,
                                    latrine_previous),
                                  ~ifelse(as.numeric(hh_diff)>=183,NA,.)))
+# temp9$hh_diff[20:30]
+# # Time differences in days
+# # [1]  47  81 405 168 112  68  15  73  45   0  13
+# temp8$water_source[20:30]
+# # [1] 1 1 0 1 1 1 1 1 1 1 1
+# temp9$water_source[20:30]
+# # [1]  1  1 NA  1  1  1  1  1  1  1  1
 
 #keep based on Brader_2019 HAZ plausability
 # Children presenting with prolonged (> 7 days' duration) and 
@@ -5400,59 +7117,102 @@ temp9 <- temp8 %>% mutate(across(c(water_source,wealth_index,
 # >>>>> MAL-ED has huge number of follow-ups at just slightly longer than 91 days so pushing out a bit for larger sample size table(as.numeric(temp10$fup_days))
 temp10 <- temp9 %>% mutate(change_ht = length_2 - length_1,
                            fup_days = HAZ_date_2 - HAZ_date_1)
+# cases_orig=cases_orig %>% mutate(change_ht = f5_height - f4b_height)
+# cases_orig$fup_days <- as.numeric(cases_orig$f5_date_date - cases_orig$f4b_date_date)
+# cases_orig=cases_orig %>% mutate(haz_dif = f4b_haz - f5_haz) 
+# temp2 <- temp1 %>% mutate(HAZ_dif=HAZ_1 - HAZ_2, #in GEMS: haz_dif = f4b_haz - f5_haz
 
 temp10$keep <- ifelse((temp10$age<=183 & temp10$fup_days>=49 & temp10$fup_days<=60 & temp10$change_ht<=8),1,
-                      ifelse((temp10$age<=183 & temp10$fup_days>=61 & temp10$fup_days<=95 & temp10$change_ht<=10),1,
-                             ifelse((temp10$age>183 & temp10$fup_days>=49 & temp10$fup_days<=60 & temp10$change_ht<=4),1,
-                                    ifelse((temp10$age>183 & temp10$fup_days>=61 & temp10$fup_days<=95 & temp10$change_ht<=6),1,
-                                           0))))
+                ifelse((temp10$age<=183 & temp10$fup_days>=61 & temp10$fup_days<=95 & temp10$change_ht<=10),1,
+                ifelse((temp10$age>183 & temp10$fup_days>=49 & temp10$fup_days<=60 & temp10$change_ht<=4),1,
+                ifelse((temp10$age>183 & temp10$fup_days>=61 & temp10$fup_days<=95 & temp10$change_ht<=6),1,
+                0))))
+#n=6617
+table(temp10$keep)
+# 0    1 
+# 209 6340 
+table(temp10$fup_days)
+length(unique(temp10$id))
 
 #temp10 n=6617
 temp11 <- temp10 %>% filter((diar_dur<=7) & #n=6051
-                              (!is.na(HAZ_dif)) & #n=6051
-                              (fup_days>=49 & fup_days<=95) & #n=5926
-                              (HAZ_1>=-6 & HAZ_1<=6) & #n=5926
-                              (abs(HAZ_dif)<=3.0) & #n=5925
-                              (keep==1) & #n=5793
-                              (change_ht>=-1.5)) #n=5788 
+         (!is.na(HAZ_dif)) & #n=6051
+         (fup_days>=49 & fup_days<=95) & #n=5926
+         (HAZ_1>=-6 & HAZ_1<=6) & #n=5926
+         (abs(HAZ_dif)<=3.0) & #n=5925
+         (keep==1) & #n=5793
+         (change_ht>=-1.5)) #n=5788 
+length(unique(temp11$id))
+#[1] 1350
 
 ################### drop missing since can't have missing in RF, define "names" variables interested in ####
 complete <- temp11 %>% filter(!is.na(Vesi_Clark_score)&!is.na(fev_bin)&!is.na(time_to_breast)&!is.na(water_source)&
-                                !is.na(wealth_index)&!is.na(sani_score)&!is.na(wall)&!is.na(kitchen)&
-                                !is.na(edu)
+                                           !is.na(wealth_index)&!is.na(sani_score)&!is.na(wall)&!is.na(kitchen)&
+                                           !is.na(edu)
 )
 #5788 to 5683 observations
-complete$index=1:dim(complete)[1] #creating an ID for each observation
-
+length(unique(complete$id))
+# [1] 1322
+complete$index=1:dim(complete)[1] #SMA creating an ID for each observation
 
 # select variables we're interested in. have checked all appropriate ones are factor
 names <- c("diar_epi_ct","HAZ_1","diar_dur",
-           "diar_days_sum","diar_dur_cat","loose_stool_max",
-           "blood",
-           "vomit_dur","app_dec_dur",
-           "dehyd_max_cat","fev_bin","ALRI_dur",
-           "age",
-           "breast_totdays",
-           "diar_days_since",
-           "ORT_caregiver",
-           "indraw_any","sleepy_any","unawake_any","abx_any",
-           "ORT_any","hosp_any",
-           "first_diar_day",
-           "breast_24","time_to_breast",
-           "colostrum","prelacteal","sex","tot_diar",
-           "water_source",
-           "ppl_slp","mean_ppl","sani_score","water_score",
-           "bed","tv","fridge","table",
-           "chair","roof","floor","wall",
-           "bank","kitchen","edu",
-           "edu2",
-           "rm_ct",
-           "income_score",
-           "two_ppl_rm","sani_concrete",
-           "sani_type","country"
+            "diar_days_sum","diar_dur_cat","loose_stool_max",
+            "blood",
+           #"Vesi_Clark_score",
+            "vomit_dur","app_dec_dur",
+            "dehyd_max_cat","fev_bin","ALRI_dur",
+            "age",
+           #"breast_excl","breast_not","breast_part","breast_predom",
+            "breast_totdays",
+            "diar_days_since",
+            "ORT_caregiver",
+            "indraw_any","sleepy_any","unawake_any","abx_any",
+            "ORT_any","hosp_any",
+            "first_diar_day",
+            "breast_24","time_to_breast",
+            "colostrum","prelacteal","sex","tot_diar",
+            "water_source",
+           #"wealth_index",
+            "ppl_slp","mean_ppl","sani_score","water_score",
+            "bed","tv","fridge","table",
+            "chair","roof","floor","wall",
+            "bank","kitchen","edu",
+            "edu2",
+           #"edu_score",
+            "rm_ct",
+            "income_score",
+           #"sani_water_score",
+            "two_ppl_rm","sani_concrete",
+            "sani_type","country"
+              # "diet_score",
+           # "meal_ct", "dairy_ct","veg_ct",
+           # "egg_ct","fish_ct","legume_ct","meat_ct",
+           # "fruit_ct","organ_ct","sweet_ct",
+               # "food_24wo","food_not_want","food_not_able",
+               # "food_fewer","sleep_hungry","food_variety","food_none",
+               # "food_worried","food_small",
 )
 
 ################### cases into age groups, random sample ####
+# dim(complete)
+# #[1] 5683  118
+# length(unique(complete$id))
+# #[1] 1322
+#
+# dim(complete[which(complete$age<365),])
+# #[1] 2586  118
+# length(unique(complete[which(complete$age<365),]$id))
+# #[1] 1093
+# dim(complete[which(complete$age>=365 & complete$age<730),])
+# #[1] 2316  118
+# length(unique(complete[which(complete$age>=365 & complete$age<730),]$id))
+# #[1] 958
+# dim(complete[which(complete$age>=730 & complete$age<1825),])
+# #[1] 781 118
+# length(unique(complete[which(complete$age>=730  & complete$age<1825),]$id))
+# #[1] 380
+
 #want 1 observation per ID in each age group
 data <- complete %>% group_by(id) %>% sample_n(1) %>% ungroup #1322
 data_age1 <- complete %>% filter(age<365) %>% #n=2597
@@ -5480,7 +7240,7 @@ table(complete$haz_1.0)
 161/5683
 
 #dates 
-# participants <- fread("C://ISASimple_Gates_MAL-ED_0-60m_RSRC_participants.txt")
+# participants <- fread("/ISASimple_Gates_MAL-ED_0-60m_RSRC_participants.txt")
 options(max.print=1500)
 participants$`Initial illness surveillance date [EUPATH_0010484]` <- as.Date(participants$`Initial illness surveillance date [EUPATH_0010484]`, "%d-%m-%Y") #25-04-2012
 summary(participants$`Initial illness surveillance date [EUPATH_0010484]`)
@@ -5491,6 +7251,7 @@ summary(participants$`Initial illness surveillance date [EUPATH_0010484]`)
 
 ################### MAIN growth falter all cases groups RF ####
 main <- CPR.funct(data=data,outcome="haz_0.5",iter=100,nvars_opts=c(1:10,15,20,30,40,50))
+#save(main, file = "/main_df_MALED023.Rdata")
 main[["df_imps"]]
 main[["AUC_df"]]
 main[["calib"]]
@@ -5601,10 +7362,11 @@ main[["calib"]]
 
 temp <- main[["decilesCC"]][c("1","2","3","4","5","6","7","8","9","10","15","20","30","40","50")]
 names(temp) <- c("1-var","2-var","3-var","4-var","5-var","6-var","7-var","8-var","9-var","10-var","15-var","20-var","30-var","40-var","50-var")  #renaming
-#jpeg("C://GF_CC_MALED059.jpg",width=600,height=480,quality=400)
+#jpeg("/GF_CC_MALED023.jpg",width=600,height=480,quality=400)
+#png("/GF_CC_MALED023.png",units="px",width=3000,height=2400,res=300)
 plot(x=seq(0,1,by=0.1),y=seq(0,1,by=0.1),type="l",
      xlab="Predicted Probability",ylab="Observed Proportion",
-     main=expression(paste("Calibration Curve:","">=0.5,Delta,"HAZ in cases 0-59mo in MAL-ED")),
+     main=expression(paste("Calibration Curve:","">=0.5,Delta,"HAZ in cases 0-23mo in MAL-ED")),
      cex.axis=1.5,cex.lab=1.5,cex.main=1.5)
 points(temp$`5-var`$`mean(pred_glm)`,temp$`5-var`$`mean(true)`,col="red",pch=1,cex=2,lwd=2)
 points(temp$`10-var`$`mean(pred_glm)`,temp$`10-var`$`mean(true)`,col="blue",pch=2,cex=2,lwd=2)
@@ -5612,16 +7374,20 @@ legend("topleft",col=c("red","blue"),c("5-variable","10-variable"),pch=c(1,2),ce
 dev.off()
 
 AUC_df <- main[["AUC_df"]]
-#jpeg("C://GF_AUCs_MALED059.jpg",width=600,height=480,quality=400)
+#save(AUC_df, file = "/AUC_df_MALED023.Rdata")
+#load(file = "/AUC_df_MALED023.Rdata")
+
+#jpeg("/GF_AUCs_MALED023.jpg",width=600,height=480,quality=400)
+#png("/GF_AUCs_MALED023.png",units="px",width=3000,height=2400,res=300)
 par(mar=c(5,5,4,2))
 plot(AUC_df$nvar[1:length(main[["nvars_opts"]])[1]],AUC_df$AUC[1:length(main[["nvars_opts"]])[1]],
      xlab="number of variables",ylab="AUC",
-     main=expression(paste("">=0.5,Delta,"HAZ in cases 0-59mo in MAL-ED")),
+     main=expression(paste("">=0.5,Delta,"HAZ in cases 0-23mo in MAL-ED")),
      ylim=c(0.5,0.85),
      pch=1,col="red",cex=2,lwd=2,cex.axis=1.5,cex.lab=1.5,cex.main=1.5)
 points(AUC_df$nvar[1:length(main[["nvars_opts"]])[1]],AUC_df$AUC[(length(main[["nvars_opts"]])[1]+1):dim(AUC_df)[1]],
        pch=2,col="blue",cex=2,lwd=2)
-legend("topleft",c("logistic reg","random forest"),col=c("red","blue"),pch=c(1,2),cex=1.5)
+legend("topleft",c("logistic regression","random forest regression"),col=c("red","blue"),pch=c(1,2),cex=1.5)
 dev.off()
 
 glm_gf <- glm(haz_0.5~HAZ_1+age+breast_totdays+tot_diar+mean_ppl+
@@ -5878,4 +7644,3 @@ main.1223[["calib"]]
 # <dbl>    <dbl>    <dbl>    <dbl> <dbl>     <dbl>     <dbl>
 # 1     5 -0.0235   -0.469    0.381 0.987     0.257      1.80
 # 2    10 -0.0279   -0.475    0.378 0.802     0.130      1.54
-
